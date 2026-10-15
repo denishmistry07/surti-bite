@@ -144,3 +144,30 @@ This means the product list continues to scroll normally and the last menu item
 can always move completely above the open Current Order panel.
 
 The cart panel itself also scrolls independently when many order lines are added.
+
+
+## Show / hide Person, table, or token field
+
+In the `Settings` sheet:
+
+`ShowOrderReference | No`
+
+- `No` = completely hide the `Person, table, or token (optional)` field and remove its space.
+- `Yes` = show the field again.
+
+After changing the setting, refresh the web app so bootstrap reloads the latest Settings values.
+
+`setupSystem()` also creates this setting automatically for a fresh installation.
+
+
+## Compact mobile top area
+
+The mobile Order screen compresses the high-frequency controls at the top:
+
+- Store session bar
+- Open-order tabs
+- `+ New` button
+- Category chips
+- Optional order context
+
+No functionality is removed. The controls remain touchable while using substantially less vertical screen space.

@@ -179,17 +179,19 @@
         </div>
         <input id="orderFor" class="order-for-input" type="text" maxlength="60" autocomplete="off" placeholder="Person, table, or token (optional)">
       </div>
-      <div class="payment">
-        <span>Payment Method</span>
-        <div class="payment-buttons">
-          <button class="pay active" data-pay="Online"><svg class="icon"><use href="#i-card"/></svg>Online</button>
-          <button class="pay" data-pay="Offline"><svg class="icon"><use href="#i-store"/></svg>Offline</button>
+      <div class="order-action-row">
+        <div class="payment">
+          <span>Payment Method</span>
+          <div class="payment-buttons">
+            <button class="pay active" data-pay="Online"><svg class="icon"><use href="#i-card"/></svg>Online</button>
+            <button class="pay" data-pay="Offline"><svg class="icon"><use href="#i-store"/></svg>Offline</button>
+          </div>
         </div>
+        <button id="saveOrder" class="save-order-btn">
+          <span class="save-order-label">Save &amp; Close</span>
+          <span id="saveOrderTotal">₹0&nbsp;&nbsp; →</span>
+        </button>
       </div>
-      <button id="saveOrder" class="save-order-btn">
-        <span class="save-order-label">Save &amp; Close</span>
-        <span id="saveOrderTotal">₹0&nbsp;&nbsp; →</span>
-      </button>
     </div>
   </div>
 

@@ -2,6 +2,7 @@ const state = {
   settings:{},
   items:[],
   showImages:false,
+  showOrderReference:false,
   session:null,
   cart:Store.get('sb.cart',{}),
   payment:Store.get('sb.payment','Online'),
@@ -169,6 +170,7 @@ async function bootstrap(){
     state.settings = data.settings || {};
     state.items = data.items || [];
     state.showImages = Boolean(data.showImages) || String(state.settings.ShowItemImages || 'No').toLowerCase() === 'yes';
+    state.showOrderReference = String(state.settings.ShowOrderReference || 'No').toLowerCase() === 'yes';
     state.session = data.session || null;
 
     renderSessionButton();
@@ -410,10 +412,23 @@ function renderOrderContext(){
     button.classList.toggle('active',button.dataset.orderType === state.orderType);
     button.disabled = state.saving;
   });
+
   const input = $('#orderFor');
   if (input){
-    if (input.value !== state.orderFor) input.value = state.orderFor;
-    input.disabled = state.saving;
+    const showReference = Boolean(state.showOrderReference);
+    input.classList.toggle('hidden', !showReference);
+
+    if (!showReference){
+      if (state.orderFor){
+        state.orderFor = '';
+        syncActiveOpenOrder();
+      }
+      input.value = '';
+      input.disabled = true;
+    }else{
+      if (input.value !== state.orderFor) input.value = state.orderFor;
+      input.disabled = state.saving;
+    }
   }
 }
 
@@ -525,7 +540,7 @@ async function saveOrder(){
   const items = cartLines().map(i => ({id:i.id,qty:i.qty}));
   if (!items.length) return;
   const openOrderId = state.activeOrderId;
-  const orderFor = String(state.orderFor || '').trim();
+  const orderFor = state.showOrderReference ? String(state.orderFor || '').trim() : '';
 
   state.saving = true;
   renderCart();

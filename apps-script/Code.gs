@@ -1214,7 +1214,8 @@ function setDefaultSettings_() {
     CurrencySymbol:'₹',
     Timezone:'Asia/Kolkata',
     OrderPrefix:'SB',
-    ShowItemImages:'No'
+    ShowItemImages:'No',
+    ShowOrderReference:'No'
   };
   Object.keys(defaults).forEach(k => upsertSetting_(k, defaults[k]));
 }
@@ -1265,8 +1266,10 @@ function setValidations_() {
   orders.getRange(2,13,Math.max(1,orders.getMaxRows()-1),1).setDataValidation(orderTypes);
 
   const settingsSheet = ss.getSheetByName(APP.SHEETS.SETTINGS);
-  const row = findKeyRow_(settingsSheet, 'ShowItemImages');
-  if (row) settingsSheet.getRange(row,2).setDataValidation(yesNo);
+  ['ShowItemImages','ShowOrderReference'].forEach(key => {
+    const row = findKeyRow_(settingsSheet, key);
+    if (row) settingsSheet.getRange(row,2).setDataValidation(yesNo);
+  });
 }
 
 function formatSheets_() {
