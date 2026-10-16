@@ -14,7 +14,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./css/style.css?v=20261015-2">
+  <link rel="stylesheet" href="./css/style.css?v=20261016-27">
 </head>
 <body>
   <svg class="icon-sprite" aria-hidden="true">
@@ -28,6 +28,8 @@
     <symbol id="i-history" viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.3-5.7L4 8.6M4 4v4.6h4.6M12 8v5l3 2"/></symbol>
     <symbol id="i-wallet" viewBox="0 0 24 24"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4H19v16H6.5A2.5 2.5 0 0 1 4 17.5zM4 7h15m-6 5h8v5h-8a2.5 2.5 0 0 1 0-5Z"/></symbol>
     <symbol id="i-card" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18m-14 5h4"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6h12M9 12h12M9 18h12"/><circle cx="4.5" cy="6" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="18" r="1"/></symbol>
     <symbol id="i-store" viewBox="0 0 24 24"><path d="M4 10v10h16V10M3 10l2-6h14l2 6a3 3 0 0 1-5 2 3 3 0 0 1-4 0 3 3 0 0 1-4 0 3 3 0 0 1-5-2Zm5 10v-5h8v5"/></symbol>
   </svg>
   <div id="offlineBanner" class="offline hidden">Offline — current order is safe.</div>
@@ -37,6 +39,16 @@
       <div class="brand reference-brand">
         <img class="brand-logo reference-logo" src="./assets/surti-bite-logo.webp" alt="Surti Bite logo">
       </div>
+      <button id="sessionBtn" class="session-banner" type="button">
+        <svg class="icon session-sun"><use href="#i-sun"/></svg>
+        <span class="session-copy">
+          <strong id="sessionBannerTitle">Session Closed</strong>
+          <small id="sessionBannerTime">Tap to open store</small>
+        </span>
+        <span class="session-live">
+          <strong id="sessionLiveLabel">Closed</strong>
+        </span>
+      </button>
       <div class="header-actions">
         <button id="searchToggle" class="header-icon-btn" type="button" aria-label="Search menu" aria-expanded="false">
           <svg class="icon"><use href="#i-search"/></svg>
@@ -54,28 +66,31 @@
       <input id="search" type="search" placeholder="Search menu items" autocomplete="off">
     </div>
 
-    <button id="sessionBtn" class="session-banner" type="button">
-      <svg class="icon session-sun"><use href="#i-sun"/></svg>
-      <span class="session-copy">
-        <strong id="sessionBannerTitle">Session Closed</strong>
-        <small id="sessionBannerTime">Tap to open store</small>
-      </span>
-      <span class="session-live">
-        <strong id="sessionLiveLabel">Closed</strong>
-        <small id="sessionOpenLabel">Store Closed</small>
-      </span>
-    </button>
-
     <section id="sessionWarning" class="session-warning hidden"></section>
 
     <section id="view-order" class="view active">
-      <div class="open-orders-bar">
-        <div id="openOrderTabs" class="open-order-tabs" aria-label="Open orders"></div>
-        <button id="newOpenOrder" class="new-order-btn" type="button" aria-label="Start a new order">+ New</button>
+      <div id="sessionRequired" class="session-required hidden">
+        <svg class="icon"><use href="#i-store"/></svg>
+        <strong>Activate a session to start taking orders</strong>
+        <small>Open the store session to view the menu and create orders.</small>
+        <button id="activateSessionBtn" class="btn primary" type="button">Activate Session</button>
       </div>
-      <div id="categories" class="chips"></div>
-      <div id="items" class="items-grid"></div>
-      <div id="emptyItems" class="empty hidden">No items found.</div>
+      <div id="orderWorkspace">
+        <div class="open-orders-bar">
+          <div id="openOrderTabs" class="open-order-tabs" aria-label="Open orders"></div>
+          <button id="newOpenOrder" class="new-order-btn" type="button" aria-label="Start a new order">+ New</button>
+        </div>
+        <div class="menu-controls">
+          <div id="categories" class="chips"></div>
+          <div class="view-mode-toggle" role="group" aria-label="Menu layout">
+            <button class="view-mode-btn active" data-item-view="grid" type="button" aria-label="Grid view" title="Grid view"><svg class="icon"><use href="#i-grid"/></svg></button>
+            <button class="view-mode-btn" data-item-view="list" type="button" aria-label="List view" title="List view"><svg class="icon"><use href="#i-list"/></svg></button>
+          </div>
+          <button class="menu-manage-btn" id="openMenuManager" type="button">Manage</button>
+        </div>
+        <div id="items" class="items-collection"></div>
+        <div id="emptyItems" class="empty hidden">No items found.</div>
+      </div>
     </section>
 
     <section id="view-today" class="view">
@@ -124,7 +139,31 @@
     </section>
 
     <section id="view-history" class="view">
-      <div class="page-head"><h2>History</h2></div>
+      <div class="page-head">
+        <h2>History</h2>
+        <button class="small-btn history-filter-toggle" id="historyFilterToggle" type="button">Filters <span id="historyFilterCount"></span></button>
+      </div>
+      <div class="card history-filters hidden" id="historyFilters">
+        <label class="history-filter-search">
+          <span>Search</span>
+          <input class="input" id="historyQuery" type="search" placeholder="Order, item, person, table or token">
+        </label>
+        <div class="history-filter-grid">
+          <label><span>From date</span><input class="input" id="historyFrom" type="date"></label>
+          <label><span>To date</span><input class="input" id="historyTo" type="date"></label>
+          <label><span>Payment</span><select class="input" id="historyPayment"><option value="">All payments</option><option>Online</option><option>Offline</option></select></label>
+          <label><span>Order type</span><select class="input" id="historyOrderType"><option value="">All types</option><option>Dine-in</option><option>Takeaway</option><option>Unspecified</option></select></label>
+          <label><span>Status</span><select class="input" id="historyStatus"><option value="">All statuses</option><option>Open</option><option>Preparing</option><option>Ready</option><option>Served</option><option>Paid</option><option>Closed</option><option>Completed</option><option>Cancelled</option></select></label>
+          <label><span>Sort by</span><select class="input" id="historySort"><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="amountHigh">Amount: high to low</option><option value="amountLow">Amount: low to high</option></select></label>
+          <label><span>Min amount</span><input class="input" id="historyMinAmount" type="number" min="0" inputmode="decimal" placeholder="₹0"></label>
+          <label><span>Max amount</span><input class="input" id="historyMaxAmount" type="number" min="0" inputmode="decimal" placeholder="Any"></label>
+        </div>
+        <div class="history-filter-actions">
+          <button class="btn ghost" id="clearHistoryFilters" type="button">Clear</button>
+          <button class="btn primary" id="applyHistoryFilters" type="button">Apply filters</button>
+        </div>
+      </div>
+      <div class="history-results-meta hidden" id="historyResultsMeta"></div>
       <div id="history"></div>
       <button class="btn ghost full hidden" id="loadMore">Load more</button>
     </section>
@@ -135,10 +174,53 @@
           <small class="eyebrow">BUSINESS DAY</small>
           <h2 id="expenseBusinessDate">Expenses</h2>
         </div>
-        <button class="btn primary" id="openExpense">+ Add</button>
+        <div class="expense-head-actions">
+          <button class="btn ghost expense-filter-toggle" id="expenseFilterToggle" type="button">Filter <span id="expenseFilterCount"></span></button>
+          <button class="btn primary" id="openExpense">+ Add</button>
+        </div>
       </div>
-      <div id="expenseStats" class="stat-grid"></div>
+      <div id="expenseOverview" class="expense-overview"></div>
+      <div class="card expense-filter-panel hidden" id="expenseFilterPanel">
+        <div class="expense-filter-label">Period</div>
+        <div class="expense-period-controls">
+          <div class="segmented expense-period-tabs" id="expensePeriodTabs">
+            <button class="segment active" data-expense-period="day" type="button">Day</button>
+            <button class="segment" data-expense-period="month" type="button">Month</button>
+            <button class="segment" data-expense-period="year" type="button">Year</button>
+          </div>
+          <input id="expensePeriodValue" class="input" type="date">
+        </div>
+        <div class="expense-filter-label">Expense type</div>
+        <div class="expense-type-filters" id="expenseTypeFilters" aria-label="Filter by expense type">
+          <button class="active" data-expense-type="All" type="button">All types</button>
+          <button data-expense-type="Operating" type="button">Operating</button>
+          <button data-expense-type="Investment" type="button">Investment</button>
+        </div>
+        <div class="expense-filter-label">Fund owner</div>
+        <div class="expense-payer-filters" id="expensePayerFilters" aria-label="Filter expenses by fund owner">
+          <button class="active" data-expense-payer="All" type="button">All</button>
+          <button data-expense-payer="Biren" type="button">Biren</button>
+          <button data-expense-payer="Denish" type="button">Denish</button>
+          <button data-expense-payer="Tanvi" type="button">Tanvi</button>
+          <button data-expense-payer="Chaitali" type="button">Chaitali</button>
+        </div>
+        <div class="expense-filter-label">Payment method</div>
+        <div class="expense-payment-filters" id="expensePaymentFilters" aria-label="Filter expenses by payment method">
+          <button class="active" data-expense-payment="All" type="button">All payments</button>
+          <button data-expense-payment="Online" type="button">Online</button>
+          <button data-expense-payment="Offline" type="button">Offline</button>
+        </div>
+        <div class="expense-filter-label">Settlement status</div>
+        <div class="expense-payment-filters" id="expenseSettlementFilters" aria-label="Filter expenses by settlement status">
+          <button class="active" data-expense-settlement="All" type="button">All statuses</button>
+          <button data-expense-settlement="Pending" type="button">Pending</button>
+          <button data-expense-settlement="Partially settled" type="button">Partial</button>
+          <button data-expense-settlement="Settled" type="button">Settled</button>
+        </div>
+      </div>
+      <div class="expense-filter-summary" id="expenseFilterSummary"></div>
       <div id="expenseList"></div>
+      <button class="btn ghost full hidden" id="loadMoreExpenses" type="button">Load more expenses</button>
     </section>
   </main>
 
@@ -148,6 +230,7 @@
     <button class="nav-item" data-view="reports"><svg class="icon"><use href="#i-file"/></svg><span>Reports</span></button>
     <button class="nav-item" data-view="history"><svg class="icon"><use href="#i-history"/></svg><span>History</span></button>
     <button class="nav-item" data-view="expenses"><svg class="icon"><use href="#i-wallet"/></svg><span>Expenses</span></button>
+    <button class="nav-item" data-view="menu"><svg class="icon"><use href="#i-grid"/></svg><span>Menu</span></button>
   </nav>
 
   <div id="cartSheet" class="sheet cart-sheet hidden">
@@ -241,6 +324,31 @@
           <option>Online</option>
           <option>Offline</option>
         </select>
+        <label class="field-label" for="expensePaidBy">Paid by</label>
+        <select id="expensePaidBy" class="input">
+          <option>Biren</option>
+          <option>Denish</option>
+          <option>Tanvi</option>
+          <option>Chaitali</option>
+        </select>
+        <label class="field-label" for="expenseSettlementType">Settlement</label>
+        <select id="expenseSettlementType" class="input">
+          <option>Own funds</option>
+          <option>Advance used</option>
+          <option>Reimbursement due</option>
+          <option>Settled</option>
+        </select>
+        <div class="settlement-form-fields hidden" id="settlementFormFields">
+          <label class="field-label" for="expenseFundOwner">Fund owner</label>
+          <select id="expenseFundOwner" class="input">
+            <option>Biren</option>
+            <option>Denish</option>
+            <option>Tanvi</option>
+            <option>Chaitali</option>
+          </select>
+          <label class="field-label" for="expenseFundRemaining">Fund remaining</label>
+          <input id="expenseFundRemaining" class="input" type="number" min="0" step="1" placeholder="₹0">
+        </div>
         <input id="expenseDesc" class="input" placeholder="Description">
         <input id="expenseVendor" class="input" placeholder="Vendor (optional)">
         <textarea id="expenseNotes" class="input" placeholder="Notes (optional)"></textarea>
@@ -248,6 +356,50 @@
       <button id="saveExpense" class="btn primary full big">Save Expense</button>
     </div>
   </div>
+
+  <div id="settlementSheet" class="sheet hidden">
+    <div class="sheet-backdrop" data-close-sheet></div>
+    <div class="sheet-panel">
+      <div class="grab"></div>
+      <div class="sheet-head"><h3>Return Advance</h3></div>
+      <input id="settlementExpenseId" type="hidden">
+      <div class="settlement-summary" id="settlementSummary"></div>
+      <div class="form-grid">
+        <label class="field-label" for="settlementFrom">Returned by</label>
+        <select id="settlementFrom" class="input"><option>Biren</option><option>Denish</option><option>Tanvi</option><option>Chaitali</option></select>
+        <label class="field-label" for="settlementTo">Returned to</label>
+        <select id="settlementTo" class="input"><option>Biren</option><option>Denish</option><option>Tanvi</option><option>Chaitali</option></select>
+        <input id="settlementAmount" class="input" type="number" min="1" step="1" placeholder="Return amount">
+        <select id="settlementPayment" class="input"><option>Online</option><option>Offline</option></select>
+        <textarea id="settlementNotes" class="input" placeholder="Notes (optional)"></textarea>
+      </div>
+      <button id="saveSettlement" class="btn primary full big">Save Return</button>
+    </div>
+  </div>
+
+  <section id="view-menu" class="view menu-manager-view">
+      <div class="page-head"><h2>Manage Menu</h2><button class="btn primary" id="newMenuItem" type="button">+ Add item</button></div>
+      <div id="menuManagerList" class="menu-manager-list"></div>
+      <div id="menuItemForm" class="menu-item-form hidden">
+        <input id="menuOriginalItemId" type="hidden">
+        <div class="form-grid">
+          <label class="field-label" for="menuItemId">Item ID</label><input id="menuItemId" class="input" maxlength="30" placeholder="Example: L006">
+          <label class="field-label" for="menuItemName">Item name</label><input id="menuItemName" class="input" maxlength="80" placeholder="Item name">
+          <label class="field-label" for="menuItemCategory">Category</label>
+          <div class="category-combobox" id="menuCategoryCombobox">
+            <input id="menuItemCategory" class="input" maxlength="40" autocomplete="off" placeholder="Select or type a new category" role="combobox" aria-expanded="false" aria-controls="menuCategoryOptions">
+            <button class="category-dropdown-toggle" id="menuCategoryToggle" type="button" aria-label="Show categories"></button>
+            <div class="category-dropdown-menu hidden" id="menuCategoryOptions" role="listbox"></div>
+          </div>
+          <label class="field-label" for="menuItemPrice">Price</label><input id="menuItemPrice" class="input" type="number" min="0" step="1" placeholder="₹0">
+          <label class="field-label" for="menuItemActive">Active</label><select id="menuItemActive" class="input"><option>Yes</option><option>No</option></select>
+          <label class="field-label" for="menuItemSortOrder">Sort order</label><input id="menuItemSortOrder" class="input" type="number" min="0" step="1" placeholder="1">
+          <label class="field-label" for="menuItemImageUrl">Image URL</label><input id="menuItemImageUrl" class="input" type="url" placeholder="https://…">
+          <label class="field-label" for="menuItemDescription">Description</label><textarea id="menuItemDescription" class="input" maxlength="240" placeholder="Item description"></textarea>
+        </div>
+        <div class="menu-item-form-actions"><button class="btn ghost" id="cancelMenuItem" type="button">Cancel</button><button class="btn primary" id="saveMenuItem" type="button">Save item</button></div>
+      </div>
+  </section>
 
   <div id="confirmModal" class="app-dialog hidden" role="dialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmMessage">
     <button class="dialog-backdrop" id="confirmBackdrop" type="button" aria-label="Cancel"></button>
@@ -284,7 +436,7 @@
 
   <script src="./js/config.js"></script>
   <script src="./js/storage.js"></script>
-  <script src="./js/api.js"></script>
-  <script src="./js/app.js?v=20261015-2"></script>
+  <script src="./js/api.js?v=20261016-6"></script>
+  <script src="./js/app.js?v=20261016-27"></script>
 </body>
 </html>

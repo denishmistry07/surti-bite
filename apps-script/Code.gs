@@ -17,10 +17,11 @@ const APP = {
     REQUESTS: 'RequestLog',
     SESSIONS: 'StoreSessions',
     EXPENSES: 'Expenses',
+    SETTLEMENTS: 'Settlements',
     EXPENSE_SUMMARY: 'ExpenseSummary'
   },
   HEADERS: {
-    Items: ['ItemID','ItemName','Category','Price','Active','SortOrder','ImageURL'],
+    Items: ['ItemID','ItemName','Category','Price','Active','SortOrder','ImageURL','Description'],
     Orders: ['OrderID','DateTime','ItemID','ItemName','Qty','UnitPrice','Total','Status','PaymentMethod','BusinessDate','SaleTime','SessionID','OrderType','OrderFor'],
     Settings: ['Key','Value'],
     DailySummary: ['Date','Orders','Dishes','Sales','BestSeller','ItemJSON','UpdatedAt','OnlineSales','OfflineSales'],
@@ -28,7 +29,8 @@ const APP = {
     YearlySummary: ['Year','Orders','Dishes','Sales','BestSeller','ItemJSON','UpdatedAt','OnlineSales','OfflineSales'],
     RequestLog: ['ClientRequestID','OrderID','CreatedAt'],
     StoreSessions: ['SessionID','BusinessDate','SessionName','OpenTime','CloseTime','Status'],
-    Expenses: ['ExpenseID','DateTime','BusinessDate','ExpenseType','Frequency','Category','Description','Amount','PaymentMethod','Vendor','SessionID','Notes'],
+    Expenses: ['ExpenseID','DateTime','BusinessDate','ExpenseType','Frequency','Category','Description','Amount','PaymentMethod','Vendor','SessionID','Notes','PaidBy','SettlementType','FundOwner','FundRemaining'],
+    Settlements: ['SettlementID','DateTime','BusinessDate','ExpenseID','FromPerson','ToPerson','Amount','PaymentMethod','Notes'],
     ExpenseSummary: ['Period','Sales','OperatingExpense','InvestmentExpense','TotalExpense','OperatingProfit','NetCashProfit','OnlineExpense','OfflineExpense']
   }
 };
@@ -51,14 +53,17 @@ function setupSystem() {
   });
 
   setDefaultSettings_();
+  CacheService.getScriptCache().remove('settings-v1');
   setValidations_();
   seedItemsIfEmpty_();
   formatSheets_();
+  installMonthlyBackupTrigger_();
   // Create Drive folders now so Google requests Drive permission during setup.
-  getOrCreateFolder_(APP.REPORT_FOLDER);
-  getOrCreateFolder_(APP.BACKUP_FOLDER);
+  getManagedFolder_(APP.REPORT_FOLDER);
+  getManagedFolder_(APP.BACKUP_FOLDER);
   const cache = CacheService.getScriptCache();
   cache.remove('items-v3');
+  cache.remove('items-v4');
   cache.remove('settings-v1');
   cache.remove('open-session-v1');
   cache.remove('orders-schema-v2');
@@ -84,18 +89,25 @@ function doGet(e) {
       result = {success:true, data:getBootstrap_()};
     } else if (action === 'items') {
       result = {success:true, data:getItemsPayload_()};
+    } else if (action === 'manageItems') {
+      result = {success:true, data:getManageItems_()};
     } else if (action === 'session') {
       result = {success:true, data:getOpenSession_()};
     } else if (action === 'today') {
       result = {success:true, data:getToday_()};
+    } else if (action === 'allTimeSales') {
+      result = {success:true, data:getAllTimeSales_()};
     } else if (action === 'history') {
       result = {success:true, data:getHistory_(
         Number(p.offset || 0),
-        Number(p.limit || 20)
+        Number(p.limit || 20),
+        {q:p.q, from:p.from, to:p.to, payment:p.payment, orderType:p.orderType,
+          status:p.status, minAmount:p.minAmount, maxAmount:p.maxAmount, sort:p.sort}
       )};
     } else if (action === 'expenses') {
       result = {success:true, data:getExpenses_(
-        String(p.businessDate || getActiveBusinessDate_())
+        String(p.value || p.businessDate || getActiveBusinessDate_()),
+        String(p.period || 'day')
       )};
     } else if (action === 'report') {
       result = {success:true, data:getReport_(
@@ -123,6 +135,12 @@ function doGet(e) {
         result = {success:true, data:updateExpense_(body)};
       } else if (action === 'deleteExpense') {
         result = {success:true, data:deleteExpense_(body.expenseId)};
+      } else if (action === 'addSettlement') {
+        result = {success:true, data:addSettlement_(body)};
+      } else if (action === 'saveItem') {
+        result = {success:true, data:saveItem_(body)};
+      } else if (action === 'deleteItem') {
+        result = {success:true, data:deleteItem_(body.itemId)};
       } else if (action === 'saveReportPdf') {
         result = {success:true, data:saveReportPdf_(body)};
       } else if (action === 'backupData') {
@@ -156,6 +174,9 @@ function doPost(e) {
     if (action === 'addExpense') return respond_({success:true, data:addExpense_(body)}, '');
     if (action === 'updateExpense') return respond_({success:true, data:updateExpense_(body)}, '');
     if (action === 'deleteExpense') return respond_({success:true, data:deleteExpense_(body.expenseId)}, '');
+    if (action === 'addSettlement') return respond_({success:true, data:addSettlement_(body)}, '');
+    if (action === 'saveItem') return respond_({success:true, data:saveItem_(body)}, '');
+    if (action === 'deleteItem') return respond_({success:true, data:deleteItem_(body.itemId)}, '');
     if (action === 'saveReportPdf') return respond_({success:true, data:saveReportPdf_(body)}, '');
     if (action === 'backupData') return respond_({success:true, data:backupData_()}, '');
 
@@ -230,7 +251,7 @@ function getSettings_() {
 
 function getItemsPayload_() {
   const cache = CacheService.getScriptCache();
-  const cached = cache.get('items-v3');
+  const cached = cache.get('items-v4');
   if (cached) return JSON.parse(cached);
 
   const settings = getSettings_();
@@ -238,7 +259,7 @@ function getItemsPayload_() {
   const sheet = ss_().getSheetByName(APP.SHEETS.ITEMS);
   if (!sheet || sheet.getLastRow() < 2) return {showImages:showImages, items:[]};
 
-  const rows = sheet.getRange(2,1,sheet.getLastRow()-1,7).getValues();
+  const rows = sheet.getRange(2,1,sheet.getLastRow()-1,8).getValues();
   const items = rows
     .filter(r => String(r[4] || '').toLowerCase() === 'yes')
     .map(r => ({
@@ -247,14 +268,76 @@ function getItemsPayload_() {
       category: String(r[2] || 'Other'),
       price: Number(r[3]) || 0,
       sortOrder: Number(r[5]) || 999,
-      imageUrl: showImages ? String(r[6] || '') : ''
+      imageUrl: showImages ? String(r[6] || '') : '',
+      description: String(r[7] || '').trim()
     }))
     .filter(i => i.id && i.name)
     .sort((a,b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
 
   const payload = {showImages:showImages, items:items};
-  cache.put('items-v3', JSON.stringify(payload), APP.CACHE_SECONDS);
+  cache.put('items-v4', JSON.stringify(payload), APP.CACHE_SECONDS);
   return payload;
+}
+
+function getManageItems_() {
+  const sheet = ss_().getSheetByName(APP.SHEETS.ITEMS);
+  if (!sheet || sheet.getLastRow() < 2) return {items:[]};
+  const items = sheet.getRange(2,1,sheet.getLastRow()-1,APP.HEADERS.Items.length).getValues()
+    .filter(r => String(r[0] || '').trim())
+    .map(r => ({
+      id:String(r[0] || ''), name:String(r[1] || ''), category:String(r[2] || 'Other'),
+      price:Number(r[3]) || 0, active:String(r[4] || 'Yes'), sortOrder:Number(r[5]) || 999,
+      imageUrl:String(r[6] || ''), description:String(r[7] || '')
+    }))
+    .sort((a,b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
+  return {items:items};
+}
+
+function saveItem_(body) {
+  const itemId = String(body.itemId || '').trim();
+  const originalItemId = String(body.originalItemId || '').trim();
+  const name = String(body.name || '').trim();
+  const category = String(body.category || 'Other').trim();
+  const price = Number(body.price);
+  const active = String(body.active || 'Yes') === 'No' ? 'No' : 'Yes';
+  const sortOrder = Math.max(0, Number(body.sortOrder) || 999);
+  if (!itemId) throw new Error('Item ID is required.');
+  if (!name) throw new Error('Item name is required.');
+  if (!(price >= 0)) throw new Error('Enter a valid price.');
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    const sheet = ss_().getSheetByName(APP.SHEETS.ITEMS);
+    const lookupId = originalItemId || itemId;
+    const rowIndex = findIdRow_(sheet, lookupId);
+    if (originalItemId && originalItemId !== itemId && findIdRow_(sheet, itemId)) throw new Error('Item ID already exists.');
+    if (!originalItemId && rowIndex) throw new Error('Item ID already exists. Edit the existing item instead.');
+    const row = [itemId,name,category,price,active,sortOrder,String(body.imageUrl || '').trim(),String(body.description || '').trim()];
+    if (rowIndex) sheet.getRange(rowIndex,1,1,row.length).setValues([row]);
+    else sheet.appendRow(row);
+    CacheService.getScriptCache().remove('items-v4');
+    return {itemId:itemId, updated:Boolean(rowIndex)};
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function deleteItem_(itemId) {
+  itemId = String(itemId || '').trim();
+  if (!itemId) throw new Error('Item ID is required.');
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    const sheet = ss_().getSheetByName(APP.SHEETS.ITEMS);
+    const rowIndex = findIdRow_(sheet,itemId);
+    if (!rowIndex) throw new Error('Item not found.');
+    sheet.deleteRow(rowIndex);
+    CacheService.getScriptCache().remove('items-v4');
+    return {itemId:itemId,deleted:true};
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function getOpenSession_() {
@@ -530,6 +613,9 @@ function deleteOrder_(orderId) {
 }
 
 function addExpense_(body) {
+  // If an edit ID reaches the add route (for example from a stale frontend),
+  // update that row instead of creating a duplicate expense.
+  if (String(body && body.expenseId || '').trim()) return updateExpense_(body);
   return saveExpenseRow_(null, body);
 }
 
@@ -572,7 +658,11 @@ function saveExpenseRow_(expenseId, body) {
     paymentMethod,
     String(body.vendor || '').trim(),
     session ? session.sessionId : String(body.sessionId || ''),
-    String(body.notes || '').trim()
+    String(body.notes || '').trim(),
+    String(body.paidBy || '').trim(),
+    String(body.settlementType || 'Own funds').trim(),
+    String(body.fundOwner || body.paidBy || '').trim(),
+    body.fundRemaining === '' || body.fundRemaining == null ? '' : Math.max(0, Number(body.fundRemaining) || 0)
   ];
 
   const sheet = ss_().getSheetByName(APP.SHEETS.EXPENSES);
@@ -584,7 +674,7 @@ function saveExpenseRow_(expenseId, body) {
     oldBusinessDate = formatDate_(sheet.getRange(rowIndex,3).getValue());
     // Preserve the original created DateTime while updating the rest.
     rowValues[1] = sheet.getRange(rowIndex,2).getValue() || now;
-    sheet.getRange(rowIndex,1,1,12).setValues([rowValues]);
+    sheet.getRange(rowIndex,1,1,APP.HEADERS.Expenses.length).setValues([rowValues]);
   } else {
     sheet.appendRow(rowValues);
   }
@@ -627,10 +717,15 @@ function deleteExpense_(expenseId) {
   }
 }
 
-function getExpenses_(businessDate) {
-  businessDate = normalizeBusinessDate_(businessDate);
+function getExpenses_(value, period) {
+  period = ['day','month','year'].includes(period) ? period : 'day';
+  value = String(value || '').trim();
+  if (period === 'day') value = normalizeBusinessDate_(value || getActiveBusinessDate_());
+  if (period === 'month' && !/^\d{4}-\d{2}$/.test(value)) throw new Error('Choose a valid month.');
+  if (period === 'year' && !/^\d{4}$/.test(value)) throw new Error('Choose a valid year.');
+  const matchesPeriod = date => period === 'day' ? date === value : period === 'month' ? date.slice(0,7) === value : date.slice(0,4) === value;
   const rows = getExpenseRows_()
-    .filter(r => formatDate_(r[2]) === businessDate)
+    .filter(r => matchesPeriod(formatDate_(r[2])))
     .map(r => ({
       expenseId:String(r[0]),
       dateTime:formatDateTime_(r[1]),
@@ -643,19 +738,100 @@ function getExpenses_(businessDate) {
       paymentMethod:String(r[8] || ''),
       vendor:String(r[9] || ''),
       sessionId:String(r[10] || ''),
-      notes:String(r[11] || '')
+      notes:String(r[11] || ''),
+      paidBy:String(r[12] || ''),
+      settlementType:String(r[13] || 'Own funds'),
+      fundOwner:String(r[14] || ''),
+      fundRemaining:r[15] === '' ? null : Number(r[15]) || 0
     }))
     .sort((a,b) => b.dateTime.localeCompare(a.dateTime));
 
+  const settlementsByExpense = {};
+  getSettlementRows_().forEach(r => {
+    const expenseId = String(r[3] || '');
+    if (!settlementsByExpense[expenseId]) settlementsByExpense[expenseId] = [];
+    settlementsByExpense[expenseId].push({
+      settlementId:String(r[0] || ''), dateTime:formatDateTime_(r[1]),
+      businessDate:formatDate_(r[2]), expenseId:expenseId,
+      fromPerson:String(r[4] || ''), toPerson:String(r[5] || ''),
+      amount:Number(r[6]) || 0, paymentMethod:String(r[7] || ''), notes:String(r[8] || '')
+    });
+  });
+  rows.forEach(x => { x.settlements = settlementsByExpense[x.expenseId] || []; });
+
   return {
-    businessDate:businessDate,
+    period:period,
+    value:value,
+    businessDate:period === 'day' ? value : '',
     items:rows,
     totals:calcExpenseTotals_(rows)
   };
 }
 
+function getSettlementSheet_() {
+  return ensureSheet_(ss_(), APP.SHEETS.SETTLEMENTS, APP.HEADERS.Settlements);
+}
+
+function getSettlementRows_() {
+  const sheet = getSettlementSheet_();
+  if (sheet.getLastRow() < 2) return [];
+  return sheet.getRange(2,1,sheet.getLastRow()-1,APP.HEADERS.Settlements.length).getValues();
+}
+
+function addSettlement_(body) {
+  const expenseId = String(body.expenseId || '').trim();
+  const amount = Number(body.amount);
+  const paymentMethod = String(body.paymentMethod || '').trim();
+  if (!expenseId) throw new Error('Expense ID required.');
+  if (!(amount > 0)) throw new Error('Return amount must be greater than zero.');
+  if (!['Online','Offline'].includes(paymentMethod)) throw new Error('Choose Online or Offline payment.');
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    const expenseSheet = ss_().getSheetByName(APP.SHEETS.EXPENSES);
+    const rowIndex = findIdRow_(expenseSheet, expenseId);
+    if (!rowIndex) throw new Error('Linked expense not found.');
+    const expense = expenseSheet.getRange(rowIndex,1,1,APP.HEADERS.Expenses.length).getValues()[0];
+    const remaining = Number(expense[15]) || 0;
+    if (remaining <= 0) throw new Error('This advance is already settled.');
+    if (amount > remaining) throw new Error('Return amount cannot be more than ₹' + remaining + '.');
+
+    const fromPerson = String(body.fromPerson || expense[12] || '').trim();
+    const toPerson = String(body.toPerson || expense[14] || '').trim();
+    if (!fromPerson || !toPerson || fromPerson === toPerson) throw new Error('Choose valid From and To people.');
+
+    const now = new Date();
+    const businessDate = normalizeBusinessDate_(body.businessDate || formatDate_(expense[2]));
+    const settlementId = 'SET-' + Utilities.formatDate(now, APP.TZ, 'yyyyMMddHHmmss') + '-' + Utilities.getUuid().slice(0,4).toUpperCase();
+    getSettlementSheet_().appendRow([
+      settlementId, now, businessDate, expenseId, fromPerson, toPerson, amount,
+      paymentMethod, String(body.notes || '').trim()
+    ]);
+
+    const newRemaining = Math.max(0, remaining - amount);
+    expenseSheet.getRange(rowIndex,16).setValue(newRemaining);
+    expenseSheet.getRange(rowIndex,14).setValue(newRemaining === 0 ? 'Settled' : 'Advance used');
+
+    return {settlementId:settlementId, expenseId:expenseId, amount:amount, remaining:newRemaining, status:newRemaining === 0 ? 'Settled' : 'Partially settled'};
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 function getToday_() {
   return getReport_('day', getActiveBusinessDate_());
+}
+
+function getAllTimeSales_() {
+  const orderIds = {};
+  let sales = 0;
+  getOrderRows_().forEach(r => {
+    if (String(r[7] || '').toLowerCase() === 'cancelled') return;
+    orderIds[String(r[0] || '')] = true;
+    sales += Number(r[6]) || 0;
+  });
+  return {sales:sales, orders:Object.keys(orderIds).filter(Boolean).length};
 }
 
 function getReport_(type, value) {
@@ -786,9 +962,10 @@ function getReport_(type, value) {
   };
 }
 
-function getHistory_(offset, limit) {
+function getHistory_(offset, limit, filters) {
   offset = Math.max(0, Number(offset) || 0);
   limit = Math.min(100, Math.max(1, Number(limit) || 20));
+  filters = filters || {};
 
   const rows = getOrderRows_();
   const map = {};
@@ -826,56 +1003,161 @@ function getHistory_(offset, limit) {
     if (String(r[7] || '').toLowerCase() === 'cancelled') map[id].status = 'Cancelled';
   });
 
-  const all = Object.keys(map)
-    .map(k => map[k])
-    .sort((a,b) => {
+  const all = Object.keys(map).map(k => map[k]);
+  const q = String(filters.q || '').trim().toLowerCase();
+  const from = String(filters.from || '').trim();
+  const to = String(filters.to || '').trim();
+  const payment = String(filters.payment || '').trim().toLowerCase();
+  const orderType = String(filters.orderType || '').trim().toLowerCase();
+  const status = String(filters.status || '').trim().toLowerCase();
+  const hasMin = filters.minAmount !== undefined && filters.minAmount !== null && String(filters.minAmount) !== '';
+  const hasMax = filters.maxAmount !== undefined && filters.maxAmount !== null && String(filters.maxAmount) !== '';
+  const minAmount = Number(filters.minAmount);
+  const maxAmount = Number(filters.maxAmount);
+
+  const filtered = all.filter(order => {
+    const searchText = [order.orderId, order.sessionId, order.orderFor, order.paymentMethod,
+      order.orderType, order.status].concat(order.items.map(item => item.itemId + ' ' + item.name)).join(' ').toLowerCase();
+    return (!q || searchText.indexOf(q) !== -1) &&
+      (!from || order.businessDate >= from) && (!to || order.businessDate <= to) &&
+      (!payment || order.paymentMethod.toLowerCase() === payment) &&
+      (!orderType || order.orderType.toLowerCase() === orderType) &&
+      (!status || order.status.toLowerCase() === status) &&
+      (!hasMin || isNaN(minAmount) || order.totalAmount >= minAmount) &&
+      (!hasMax || isNaN(maxAmount) || order.totalAmount <= maxAmount);
+  });
+
+  const sort = String(filters.sort || 'newest');
+  filtered.sort((a,b) => {
+      if (sort === 'amountHigh') return b.totalAmount - a.totalAmount;
+      if (sort === 'amountLow') return a.totalAmount - b.totalAmount;
       const at = a.dateValue ? a.dateValue.getTime() : 0;
       const bt = b.dateValue ? b.dateValue.getTime() : 0;
-      return bt - at;
-    })
-    .map(x => {
+      return sort === 'oldest' ? at - bt : bt - at;
+    });
+
+  const page = filtered.slice(offset, offset + limit).map(x => {
+      x = Object.assign({},x);
       delete x.dateValue;
       return x;
     });
 
   return {
-    orders:all.slice(offset, offset + limit),
-    nextOffset:(offset + limit < all.length) ? offset + limit : null
+    orders:page,
+    total:all.length,
+    filteredTotal:filtered.length,
+    nextOffset:(offset + limit < filtered.length) ? offset + limit : null
   };
 }
 
 function saveReportPdf_(body) {
-  const type = String(body.type || 'day');
-  const value = String(body.value || getActiveBusinessDate_());
-  const report = getReport_(type, value);
-  const settings = getSettings_();
-  const html = buildReportHtml_(report, settings);
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const type = String(body.type || 'day');
+    const value = String(body.value || getActiveBusinessDate_());
+    const report = getReport_(type, value);
+    const settings = getSettings_();
+    const html = buildReportHtml_(report, settings);
 
-  const fileName = 'Surti-Bite-' + type + '-report-' + value + '.pdf';
-  const blob = Utilities.newBlob(html, MimeType.HTML, fileName + '.html').getAs(MimeType.PDF).setName(fileName);
-  const folder = getReportFolder_(value);
-  const file = folder.createFile(blob).setName(fileName);
+    const fileName = fileNameSlug_(getFileNamePrefix_()) + '-' + type + '-report-' + value + '.pdf';
+    const blob = Utilities.newBlob(html, MimeType.HTML, fileName + '.html').getAs(MimeType.PDF).setName(fileName);
+    const folder = getReportFolder_(value);
 
-  return {
-    fileId:file.getId(),
-    fileName:file.getName(),
-    url:file.getUrl(),
-    folderName:folder.getName()
-  };
+    // Keep one current PDF for each report period. Old copies remain recoverable
+    // from Drive trash instead of accumulating duplicate filenames.
+    const existing = folder.getFilesByName(fileName);
+    while (existing.hasNext()) existing.next().setTrashed(true);
+
+    const file = folder.createFile(blob).setName(fileName);
+    return {
+      fileId:file.getId(),
+      fileName:file.getName(),
+      url:file.getUrl(),
+      folderName:folder.getName()
+    };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function backupData_() {
-  const now = new Date();
-  const name = 'Surti Bite Backup ' + Utilities.formatDate(now, APP.TZ, 'yyyy-MM-dd HH-mm-ss');
-  const folder = getOrCreateFolder_(APP.BACKUP_FOLDER);
-  const source = DriveApp.getFileById(APP.SPREADSHEET_ID);
-  const copy = source.makeCopy(name, folder);
-  return {
-    fileId:copy.getId(),
-    fileName:copy.getName(),
-    url:copy.getUrl(),
-    folderName:folder.getName()
-  };
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const now = new Date();
+    const dayKey = Utilities.formatDate(now, APP.TZ, 'yyyy-MM-dd');
+    const name = getFileNamePrefix_() + ' Backup ' + dayKey;
+    const folder = getManagedFolder_(APP.BACKUP_FOLDER);
+
+    // Keep one current manual backup per day. This also cleans up older
+    // timestamped backups for the same day created by previous app versions.
+    let replaced = false;
+    const files = folder.getFiles();
+    while (files.hasNext()) {
+      const file = files.next();
+      if (file.getName().indexOf(name) === 0) {
+        file.setTrashed(true);
+        replaced = true;
+      }
+    }
+    const copy = DriveApp.getFileById(APP.SPREADSHEET_ID).makeCopy(name, folder);
+
+    return {
+      fileId:copy.getId(),
+      fileName:copy.getName(),
+      url:copy.getUrl(),
+      folderName:folder.getName(),
+      replaced:replaced
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Runs automatically on the first day of each month and stores one snapshot
+ * for the month that just ended. Safe to run manually as well.
+ */
+function runMonthlyBackup() {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const now = new Date();
+    const previousMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const monthKey = Utilities.formatDate(previousMonth, APP.TZ, 'yyyy-MM');
+    const name = getFileNamePrefix_() + ' Monthly Backup ' + monthKey;
+    const folder = getManagedFolder_(APP.BACKUP_FOLDER);
+    const existing = folder.getFilesByName(name);
+    const copy = existing.hasNext()
+      ? existing.next()
+      : DriveApp.getFileById(APP.SPREADSHEET_ID).makeCopy(name, folder);
+
+    return {
+      fileId:copy.getId(),
+      fileName:copy.getName(),
+      url:copy.getUrl(),
+      folderName:folder.getName(),
+      month:monthKey
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Installs exactly one monthly backup trigger for this Apps Script project. */
+function installMonthlyBackupTrigger_() {
+  const handler = 'runMonthlyBackup';
+  ScriptApp.getProjectTriggers().forEach(trigger => {
+    if (trigger.getHandlerFunction() === handler) ScriptApp.deleteTrigger(trigger);
+  });
+
+  ScriptApp.newTrigger(handler)
+    .timeBased()
+    .onMonthDay(1)
+    .atHour(2)
+    .inTimezone(APP.TZ)
+    .create();
 }
 
 function buildReportHtml_(r, settings) {
@@ -984,7 +1266,7 @@ function getOrderRows_() {
 function getExpenseRows_() {
   const sheet = ss_().getSheetByName(APP.SHEETS.EXPENSES);
   if (!sheet || sheet.getLastRow() < 2) return [];
-  return sheet.getRange(2,1,sheet.getLastRow()-1,12).getValues();
+  return sheet.getRange(2,1,sheet.getLastRow()-1,APP.HEADERS.Expenses.length).getValues();
 }
 
 function getSessionMeta_() {
@@ -1156,15 +1438,49 @@ function escapeHtml_(value) {
 }
 
 function getReportFolder_(value) {
-  const root = getOrCreateFolder_(APP.REPORT_FOLDER);
+  const root = getManagedFolder_(APP.REPORT_FOLDER);
   const year = String(value || Utilities.formatDate(new Date(), APP.TZ, 'yyyy')).slice(0,4);
   return getOrCreateChildFolder_(root, year);
 }
 
-function getOrCreateFolder_(name) {
-  const folders = DriveApp.getFoldersByName(name);
-  if (folders.hasNext()) return folders.next();
-  return DriveApp.createFolder(name);
+function getStorageParentFolder_() {
+  const settings = getSettings_();
+  const name = String(settings.DriveParentFolderName || 'Surti Bite').trim() || 'Surti Bite';
+  return getOrCreateChildFolder_(DriveApp.getRootFolder(), name);
+}
+
+function getFileNamePrefix_() {
+  const settings = getSettings_();
+  const prefix = String(settings.FileNamePrefix || settings.ShopName || 'Surti Bite').trim();
+  return (prefix || 'Surti Bite').replace(/[\\/:*?"<>|]+/g, '-');
+}
+
+function fileNameSlug_(value) {
+  return String(value || 'Surti Bite')
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/[^A-Za-z0-9_-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '') || 'Surti-Bite';
+}
+
+/**
+ * Returns a managed child folder inside the configured Surti Bite parent.
+ * Existing same-name folders at My Drive root are moved into the parent once.
+ */
+function getManagedFolder_(name) {
+  const parent = getStorageParentFolder_();
+  const nested = parent.getFoldersByName(name);
+  if (nested.hasNext()) return nested.next();
+
+  const rootMatches = DriveApp.getRootFolder().getFoldersByName(name);
+  if (rootMatches.hasNext()) {
+    const existing = rootMatches.next();
+    existing.moveTo(parent);
+    return existing;
+  }
+
+  return parent.createFolder(name);
 }
 
 function getOrCreateChildFolder_(parent, name) {
@@ -1214,7 +1530,10 @@ function setDefaultSettings_() {
     CurrencySymbol:'₹',
     Timezone:'Asia/Kolkata',
     OrderPrefix:'SB',
+    DriveParentFolderName:'Surti Bite',
+    FileNamePrefix:'Surti Bite',
     ShowItemImages:'No',
+    ShowItemDescriptions:'Yes',
     ShowOrderReference:'No'
   };
   Object.keys(defaults).forEach(k => upsertSetting_(k, defaults[k]));
@@ -1233,13 +1552,13 @@ function upsertSetting_(key, value) {
 function seedItemsIfEmpty_() {
   const sheet = ss_().getSheetByName(APP.SHEETS.ITEMS);
   if (sheet.getLastRow() >= 2) return;
-  sheet.getRange(2,1,6,7).setValues([
-    ['L001','Sada Locho','Locho',50,'Yes',1,''],
-    ['L002','Oil Locho','Locho',60,'Yes',2,''],
-    ['L003','Butter Locho','Locho',80,'Yes',3,''],
-    ['L004','Cheese Locho','Locho',100,'Yes',4,''],
-    ['L005','Amul Cheese Butter Locho','Locho',120,'Yes',5,''],
-    ['L006','Double Cheese Locho','Locho',150,'Yes',6,'']
+  sheet.getRange(2,1,6,8).setValues([
+    ['L001','Sada Locho','Locho',50,'Yes',1,'','Classic Surti Locho with authentic spices'],
+    ['L002','Oil Locho','Locho',60,'Yes',2,'','Flavourful locho with special oil tadka'],
+    ['L003','Butter Locho','Locho',80,'Yes',3,'','Rich and creamy with premium butter'],
+    ['L004','Cheese Locho','Locho',100,'Yes',4,'','Delicious locho with melted cheese'],
+    ['L005','Amul Cheese Butter Locho','Locho',120,'Yes',5,'','Cheese and butter locho'],
+    ['L006','Double Cheese Locho','Locho',150,'Yes',6,'','Locho topped with extra cheese']
   ]);
 }
 
@@ -1253,6 +1572,8 @@ function setValidations_() {
   const orderTypes = SpreadsheetApp.newDataValidation().requireValueInList(['Dine-in','Takeaway'], true).setAllowInvalid(false).build();
   const frequency = SpreadsheetApp.newDataValidation().requireValueInList(['One-time','Daily','Weekly','Monthly','Other'], true).setAllowInvalid(false).build();
   const categories = SpreadsheetApp.newDataValidation().requireValueInList(['Ingredients','Packaging','Gas/Fuel','Transport','Rent','Utilities','Equipment','Marketing','Maintenance','Other'], true).setAllowInvalid(true).build();
+  const expensePeople = SpreadsheetApp.newDataValidation().requireValueInList(['Biren','Denish','Tanvi','Chaitali'], true).setAllowInvalid(false).build();
+  const settlementTypes = SpreadsheetApp.newDataValidation().requireValueInList(['Own funds','Advance used','Reimbursement due','Settled'], true).setAllowInvalid(false).build();
 
   ss.getSheetByName(APP.SHEETS.ITEMS).getRange('E2:E1000').setDataValidation(yesNo);
   ss.getSheetByName(APP.SHEETS.ORDERS).getRange('I2:I2000').setDataValidation(payment);
@@ -1262,11 +1583,16 @@ function setValidations_() {
   ss.getSheetByName(APP.SHEETS.EXPENSES).getRange('E2:E2000').setDataValidation(frequency);
   ss.getSheetByName(APP.SHEETS.EXPENSES).getRange('F2:F2000').setDataValidation(categories);
   ss.getSheetByName(APP.SHEETS.EXPENSES).getRange('I2:I2000').setDataValidation(payment);
+  ss.getSheetByName(APP.SHEETS.EXPENSES).getRange('M2:M2000').setDataValidation(expensePeople);
+  ss.getSheetByName(APP.SHEETS.EXPENSES).getRange('N2:N2000').setDataValidation(settlementTypes);
+  ss.getSheetByName(APP.SHEETS.EXPENSES).getRange('O2:O2000').setDataValidation(expensePeople);
+  ss.getSheetByName(APP.SHEETS.SETTLEMENTS).getRange('E2:F2000').setDataValidation(expensePeople);
+  ss.getSheetByName(APP.SHEETS.SETTLEMENTS).getRange('H2:H2000').setDataValidation(payment);
   const orders = ss.getSheetByName(APP.SHEETS.ORDERS);
   orders.getRange(2,13,Math.max(1,orders.getMaxRows()-1),1).setDataValidation(orderTypes);
 
   const settingsSheet = ss.getSheetByName(APP.SHEETS.SETTINGS);
-  ['ShowItemImages','ShowOrderReference'].forEach(key => {
+  ['ShowItemImages','ShowItemDescriptions','ShowOrderReference'].forEach(key => {
     const row = findKeyRow_(settingsSheet, key);
     if (row) settingsSheet.getRange(row,2).setDataValidation(yesNo);
   });
@@ -1286,6 +1612,7 @@ function formatSheets_() {
   const items = ss.getSheetByName(APP.SHEETS.ITEMS);
   items.setColumnWidth(2,190);
   items.setColumnWidth(7,300);
+  items.setColumnWidth(8,280);
 
   const orders = ss.getSheetByName(APP.SHEETS.ORDERS);
   orders.setColumnWidth(13,100);
@@ -1294,6 +1621,14 @@ function formatSheets_() {
   const expenses = ss.getSheetByName(APP.SHEETS.EXPENSES);
   expenses.setColumnWidth(7,220);
   expenses.setColumnWidth(12,220);
+  expenses.setColumnWidths(13,3,120);
+  expenses.setColumnWidth(16,110);
+  expenses.getRange('P2:P').setNumberFormat('₹#,##0.00');
+  const settlements = ss.getSheetByName(APP.SHEETS.SETTLEMENTS);
+  settlements.setColumnWidth(4,180);
+  settlements.setColumnWidths(5,2,110);
+  settlements.setColumnWidth(9,220);
+  settlements.getRange('G2:G').setNumberFormat('₹#,##0.00');
 
   // Orders already have a dedicated SaleTime column, so DateTime is displayed
   // as date-only there. Other timestamp columns display both date and time.
@@ -1302,6 +1637,7 @@ function formatSheets_() {
   ss.getSheetByName(APP.SHEETS.ORDERS).getRange('J2:J').setNumberFormat('dd/MM/yyyy');
   ss.getSheetByName(APP.SHEETS.SESSIONS).getRange('D2:E').setNumberFormat(dateTimeFormat);
   ss.getSheetByName(APP.SHEETS.EXPENSES).getRange('B2:B').setNumberFormat(dateTimeFormat);
+  ss.getSheetByName(APP.SHEETS.SETTLEMENTS).getRange('B2:B').setNumberFormat(dateTimeFormat);
   ss.getSheetByName(APP.SHEETS.REQUESTS).getRange('C2:C').setNumberFormat(dateTimeFormat);
   ss.getSheetByName(APP.SHEETS.DAILY).getRange('G2:G').setNumberFormat(dateTimeFormat);
   ss.getSheetByName(APP.SHEETS.MONTHLY).getRange('G2:G').setNumberFormat(dateTimeFormat);

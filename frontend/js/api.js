@@ -109,17 +109,19 @@ window.Api = {
   },
 
   bootstrap(){ return this.request('bootstrap'); },
+  manageItems(){ return this.request('manageItems'); },
   today(){ return this.request('today'); },
+  allTimeSales(){ return this.request('allTimeSales'); },
 
-  history(offset=0){
+  history(offset=0, filters={}){
     return this.request('history', {
-      params:{offset, limit:APP_CONFIG.HISTORY_LIMIT}
+      params:{offset, limit:APP_CONFIG.HISTORY_LIMIT, ...filters}
     });
   },
 
-  expenses(businessDate){
+  expenses(value,period='day'){
     return this.request('expenses', {
-      params:{businessDate}
+      params:{value,period}
     });
   },
 
@@ -161,11 +163,23 @@ window.Api = {
     return this.request('deleteExpense',{body:{expenseId}});
   },
 
+  addSettlement(body){
+    return this.request('addSettlement',{body});
+  },
+
+  saveItem(body){
+    return this.request('saveItem',{body});
+  },
+
+  deleteItem(itemId){
+    return this.request('deleteItem',{body:{itemId}});
+  },
+
   saveReportPdf(type,value){
-    return this.request('saveReportPdf',{body:{type,value}});
+    return this.request('saveReportPdf',{body:{type,value},retries:0});
   },
 
   backupData(){
-    return this.request('backupData',{body:{}});
+    return this.request('backupData',{body:{},retries:0});
   }
 };

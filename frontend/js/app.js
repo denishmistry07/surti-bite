@@ -1,7 +1,9 @@
 const state = {
   settings:{},
   items:[],
+  adminItems:[],
   showImages:false,
+  showItemDescriptions:true,
   showOrderReference:false,
   session:null,
   cart:Store.get('sb.cart',{}),
@@ -11,12 +13,24 @@ const state = {
   orderType:'Dine-in',
   orderFor:'',
   activeCategory:'All',
+  itemView:Store.get('sb.itemView','grid') === 'list' ? 'list' : 'grid',
   search:'',
   historyOffset:0,
   nextHistoryOffset:null,
+  historyLoading:false,
+  loadingViews:new Set(),
+  historyFilters:{q:'', from:'', to:'', payment:'', orderType:'', status:'', minAmount:'', maxAmount:'', sort:'newest'},
   reportType:'day',
   saving:false,
   expenses:[],
+  expensePaidByFilter:'All',
+  expensePaymentFilter:'All',
+  expenseTypeFilter:'All',
+  expenseSettlementFilter:'All',
+  expensePeriod:'day',
+  expensePeriodValue:'',
+  expenseVisibleCount:20,
+  editingExpenseId:'',
   report:null
 };
 
@@ -34,11 +48,45 @@ async function init(){
   renderOpenOrders();
   setDefaultReportInput();
   setOffline(!navigator.onLine);
+  initializeLazyLoading();
 
   window.addEventListener('online',()=>setOffline(false));
   window.addEventListener('offline',()=>setOffline(true));
 
   await bootstrap();
+}
+
+function setViewLoading(view,loading,label='Loading data…'){
+  const section = $('#view-'+view);
+  if (!section) return;
+  let loader = $('#globalViewLoader');
+  if (!loader){
+    loader = document.createElement('div');
+    loader.id = 'globalViewLoader';
+    loader.className = 'view-loader hidden';
+    loader.innerHTML = '<span class="loader-spinner" aria-hidden="true"></span><strong></strong>';
+    document.body.appendChild(loader);
+  }
+  if (loading) state.loadingViews.add(view);
+  else state.loadingViews.delete(view);
+  if (loading) loader.querySelector('strong').textContent = label;
+  loader.classList.toggle('hidden',state.loadingViews.size === 0);
+  section.setAttribute('aria-busy',String(loading));
+}
+
+function initializeLazyLoading(){
+  if (!('IntersectionObserver' in window)) return;
+  const loadMore = $('#loadMore');
+  const loadMoreExpenses = $('#loadMoreExpenses');
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(entry => {
+      if (!entry.isIntersecting || entry.target.classList.contains('hidden')) return;
+      if (entry.target === loadMore) loadMoreHistory();
+      if (entry.target === loadMoreExpenses) loadMoreExpenseCards();
+    });
+  },{rootMargin:'240px 0px'});
+  if (loadMore) observer.observe(loadMore);
+  if (loadMoreExpenses) observer.observe(loadMoreExpenses);
 }
 
 function observeCartSheetSize(){
@@ -75,7 +123,14 @@ function bind(){
     renderItems();
   };
 
+  $$('.view-mode-btn').forEach(button => button.onclick = () => {
+    state.itemView = button.dataset.itemView === 'list' ? 'list' : 'grid';
+    Store.set('sb.itemView',state.itemView);
+    renderItems();
+  });
+
   $('#newOpenOrder').onclick = startNewOpenOrder;
+  $('#activateSessionBtn').onclick = renderSessionSheet;
   $('#openOrderTabs').onclick = e => {
     const remove = e.target.closest('[data-remove-open-order]');
     const select = e.target.closest('[data-open-order]');
@@ -122,6 +177,7 @@ function bind(){
   });
   document.addEventListener('click', e => {
     if (!e.target.closest('.custom-select')) closeCustomSelects();
+    if (!e.target.closest('.category-combobox')) closeMenuCategoryDropdown();
   });
 
   $$('[data-close-sheet]').forEach(x => x.onclick = closeSheets);
@@ -137,17 +193,88 @@ function bind(){
   $('#sessionBtn').onclick = renderSessionSheet;
   $('#businessDateBtn').onclick = renderSessionSheet;
   $('#refreshToday').onclick = loadToday;
+  $('#openMenuManager').onclick = openMenuManager;
+  $('#newMenuItem').onclick = () => openMenuItemForm();
+  $('#cancelMenuItem').onclick = closeMenuItemForm;
+  $('#saveMenuItem').onclick = saveMenuItem;
+  $('#menuItemCategory').onfocus = () => openMenuCategoryDropdown();
+  $('#menuItemCategory').oninput = e => openMenuCategoryDropdown(e.target.value);
+  $('#menuCategoryToggle').onclick = e => {
+    e.stopPropagation();
+    const menu = $('#menuCategoryOptions');
+    if (menu.classList.contains('hidden')) openMenuCategoryDropdown($('#menuItemCategory').value);
+    else closeMenuCategoryDropdown();
+  };
+  $('#menuCategoryOptions').onclick = e => {
+    const option = e.target.closest('[data-menu-category]');
+    if (!option) return;
+    $('#menuItemCategory').value = option.dataset.menuCategory;
+    closeMenuCategoryDropdown();
+  };
+  $('#menuManagerList').onclick = e => {
+    const edit = e.target.closest('[data-edit-menu-item]');
+    const del = e.target.closest('[data-delete-menu-item]');
+    if (edit) openMenuItemForm(state.adminItems.find(item => item.id === edit.dataset.editMenuItem));
+    if (del) deleteMenuItem(del.dataset.deleteMenuItem);
+  };
 
   $('#openExpense').onclick = () => openExpenseForm();
   $('#cancelExpenseEdit').onclick = () => resetExpenseForm();
   $('#saveExpense').onclick = saveExpense;
+  $('#expenseSettlementType').onchange = renderSettlementFields;
+  $('#expensePaidBy').onchange = () => {
+    if ($('#expenseSettlementType').value === 'Own funds') $('#expenseFundOwner').value = $('#expensePaidBy').value;
+    syncCustomSelect($('#expenseFundOwner'));
+  };
 
   $('#expenseList').onclick = e => {
     const edit = e.target.closest('[data-edit-expense]');
     const del = e.target.closest('[data-delete-expense]');
+    const settle = e.target.closest('[data-settle-expense]');
+    if (settle) return openSettlementForm(settle.dataset.settleExpense);
     if (edit) editExpense(edit.dataset.editExpense);
     if (del) deleteExpense(del.dataset.deleteExpense);
   };
+  $('#saveSettlement').onclick = saveSettlement;
+  $('#expenseFilterToggle').onclick = () => $('#expenseFilterPanel').classList.toggle('hidden');
+  $('#expensePeriodValue').onchange = e => {
+    state.expensePeriodValue = e.target.value;
+    loadExpenses();
+  };
+  $('#expensePeriodTabs').onclick = e => {
+    const button = e.target.closest('[data-expense-period]');
+    if (!button) return;
+    setExpensePeriod(button.dataset.expensePeriod);
+  };
+  $('#expensePayerFilters').onclick = e => {
+    const button = e.target.closest('[data-expense-payer]');
+    if (!button) return;
+    state.expensePaidByFilter = button.dataset.expensePayer;
+    state.expenseVisibleCount = 20;
+    renderExpenses();
+  };
+  $('#expensePaymentFilters').onclick = e => {
+    const button = e.target.closest('[data-expense-payment]');
+    if (!button) return;
+    state.expensePaymentFilter = button.dataset.expensePayment;
+    state.expenseVisibleCount = 20;
+    renderExpenses();
+  };
+  $('#expenseTypeFilters').onclick = e => {
+    const button = e.target.closest('[data-expense-type]');
+    if (!button) return;
+    state.expenseTypeFilter = button.dataset.expenseType;
+    state.expenseVisibleCount = 20;
+    renderExpenses();
+  };
+  $('#expenseSettlementFilters').onclick = e => {
+    const button = e.target.closest('[data-expense-settlement]');
+    if (!button) return;
+    state.expenseSettlementFilter = button.dataset.expenseSettlement;
+    state.expenseVisibleCount = 20;
+    renderExpenses();
+  };
+  $('#loadMoreExpenses').onclick = loadMoreExpenseCards;
 
   $('#history').onclick = e => {
     const cancel = e.target.closest('[data-cancel-order]');
@@ -157,19 +284,25 @@ function bind(){
   };
 
   $('#loadMore').onclick = loadMoreHistory;
+  $('#historyFilterToggle').onclick = () => $('#historyFilters').classList.toggle('hidden');
+  $('#applyHistoryFilters').onclick = applyHistoryFilters;
+  $('#clearHistoryFilters').onclick = clearHistoryFilters;
+  $('#historyQuery').onkeydown = e => { if (e.key === 'Enter') applyHistoryFilters(); };
   $('#loadReport').onclick = loadReport;
   $('#saveReportPdf').onclick = saveReportPdf;
   $('#backupData').onclick = backupData;
 
-  $$('.segment').forEach(b => b.onclick = () => setReportType(b.dataset.report));
+  $$('#view-reports .segment').forEach(b => b.onclick = () => setReportType(b.dataset.report));
 }
 
 async function bootstrap(){
+  setViewLoading('order',true,'Loading menu…');
   try{
     const data = await Api.bootstrap();
     state.settings = data.settings || {};
     state.items = data.items || [];
     state.showImages = Boolean(data.showImages) || String(state.settings.ShowItemImages || 'No').toLowerCase() === 'yes';
+    state.showItemDescriptions = String(state.settings.ShowItemDescriptions || 'Yes').toLowerCase() === 'yes';
     state.showOrderReference = String(state.settings.ShowOrderReference || 'No').toLowerCase() === 'yes';
     state.session = data.session || null;
 
@@ -180,12 +313,15 @@ async function bootstrap(){
     renderCart();
   }catch(e){
     toast(e.message || 'Could not connect to server.', true);
+  }finally{
+    setViewLoading('order',false);
   }
 }
 
 function showView(view){
   $$('.view').forEach(v => v.classList.remove('active'));
   $('#view-'+view).classList.add('active');
+  document.body.classList.toggle('menu-view-active',view === 'menu');
   $$('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.view === view));
   if (view !== 'order') setSearchOpen(false);
   ensureCartSheetVisible();
@@ -194,6 +330,7 @@ function showView(view){
   if (view === 'history') loadHistory(true);
   if (view === 'expenses') loadExpenses();
   if (view === 'reports') loadReport();
+  if (view === 'menu') loadMenuManager();
 }
 
 function toggleSearch(){
@@ -230,20 +367,42 @@ function visibleItems(){
 function renderItems(){
   const list = visibleItems();
   $('#emptyItems').classList.toggle('hidden',!!list.length);
+  const container = $('#items');
+  container.classList.toggle('list-view',state.itemView === 'list');
+  $$('.view-mode-btn').forEach(button => {
+    const active = button.dataset.itemView === state.itemView;
+    button.classList.toggle('active',active);
+    button.setAttribute('aria-pressed',String(active));
+  });
 
-  $('#items').innerHTML = list.map(item => {
+  const groups = [];
+  list.forEach(item => {
+    const category = item.category || 'Other';
+    let group = groups.find(entry => entry.category === category);
+    if (!group){
+      group = {category:category,items:[]};
+      groups.push(group);
+    }
+    group.items.push(item);
+  });
+
+  container.innerHTML = groups.map(group => `<section class="menu-category-section">
+    <div class="menu-category-heading"><span>${esc(group.category)}</span></div>
+    <div class="items-grid">${group.items.map(item => {
     const qty = Number(state.cart[item.id] || 0);
     const image = state.showImages && item.imageUrl
       ? `<img class="item-image" loading="lazy" decoding="async" src="${esc(item.imageUrl)}" alt="${esc(item.name)}">`
       : '';
-    const desc = item.description ? esc(item.description) : defaultItemDescription(item.name);
+    const description = state.showItemDescriptions && item.description
+      ? `<div class="item-desc">${esc(item.description)}</div>`
+      : '';
 
     return `<article class="item-card ${qty ? 'selected' : ''}" data-item-card="${esc(item.id)}">
       ${image}
       <div class="item-card-content">
         <div class="item-name">${esc(item.name)}</div>
         <div class="item-price">₹${money(item.price)}</div>
-        <div class="item-desc">${desc}</div>
+        ${description}
       </div>
       <div class="qty-row">
         <div class="card-stepper" aria-label="Quantity for ${esc(item.name)}">
@@ -254,16 +413,142 @@ function renderItems(){
         <button class="add-btn" data-step="plus" data-id="${esc(item.id)}">Add</button>
       </div>
     </article>`;
-  }).join('');
+    }).join('')}</div>
+  </section>`).join('');
 }
 
-function defaultItemDescription(name){
-  const n = String(name || '').toLowerCase();
-  if (n.includes('butter')) return 'Rich and creamy with premium butter';
-  if (n.includes('cheese')) return 'Delicious locho with melted cheese';
-  if (n.includes('oil')) return 'Flavourful locho with special oil tadka';
-  if (n.includes('sada')) return 'Classic Surti Locho with authentic spices';
-  return 'Authentic Surti flavour';
+function openMenuManager(){
+  showView('menu');
+}
+
+async function loadMenuManager(){
+  closeMenuItemForm();
+  $('#menuManagerList').innerHTML = '<div class="menu-manager-loading"><span class="loader-spinner"></span><strong>Loading items…</strong></div>';
+  try{
+    const data = await Api.manageItems();
+    state.adminItems = data.items || [];
+    renderMenuCategoryOptions();
+    renderMenuManager();
+  }catch(e){
+    $('#menuManagerList').innerHTML = '<div class="empty">Could not load menu items.</div>';
+    toast(e.message || 'Could not load menu items.',true);
+  }
+}
+
+function menuCategories(){
+  return [...new Set(state.adminItems.map(item => String(item.category || '').trim()).filter(Boolean))]
+    .sort((a,b) => a.localeCompare(b));
+}
+
+function renderMenuCategoryOptions(filter=''){
+  const query = String(filter || '').trim().toLowerCase();
+  const categories = menuCategories().filter(category => !query || category.toLowerCase().includes(query));
+  $('#menuCategoryOptions').innerHTML = categories.length
+    ? categories.map(category => `<button class="category-dropdown-option" data-menu-category="${esc(category)}" type="button" role="option">${esc(category)}</button>`).join('')
+    : '<div class="category-dropdown-empty">Type to create this new category</div>';
+}
+
+function openMenuCategoryDropdown(filter=''){
+  renderMenuCategoryOptions(filter);
+  $('#menuCategoryOptions').classList.remove('hidden');
+  $('#menuItemCategory').setAttribute('aria-expanded','true');
+  $('#menuCategoryToggle').classList.add('open');
+}
+
+function closeMenuCategoryDropdown(){
+  $('#menuCategoryOptions')?.classList.add('hidden');
+  $('#menuItemCategory')?.setAttribute('aria-expanded','false');
+  $('#menuCategoryToggle')?.classList.remove('open');
+}
+
+function renderMenuManager(){
+  if (!state.adminItems.length){
+    $('#menuManagerList').innerHTML = '<div class="empty">No menu items. Add your first item.</div>';
+    return;
+  }
+  const groups = [];
+  state.adminItems.forEach(item => {
+    const category = item.category || 'Other';
+    let group = groups.find(entry => entry.category === category);
+    if (!group){ group = {category,items:[]}; groups.push(group); }
+    group.items.push(item);
+  });
+  $('#menuManagerList').innerHTML = groups.map(group => `<section class="menu-manager-category">
+    <div class="menu-manager-category-title"><strong>${esc(group.category)}</strong><span>${group.items.length} item${group.items.length === 1 ? '' : 's'}</span></div>
+    <div class="menu-manager-category-items">${group.items.map(item => `
+      <div class="menu-manager-row ${item.active === 'No' ? 'inactive' : ''}">
+        <div><strong>${esc(item.name)}</strong><small>${esc(item.id)} · Sort ${money(item.sortOrder)}${item.active === 'No' ? ' · Inactive' : ''}</small></div>
+        <strong>₹${money(item.price)}</strong>
+        <button class="small-btn" data-edit-menu-item="${esc(item.id)}" type="button">Edit</button>
+        <button class="small-btn danger-text" data-delete-menu-item="${esc(item.id)}" type="button">Delete</button>
+      </div>`).join('')}</div>
+  </section>`).join('');
+}
+
+function openMenuItemForm(item=null){
+  const value = item || {};
+  $('#menuOriginalItemId').value = value.id || '';
+  $('#menuItemId').value = value.id || '';
+  $('#menuItemName').value = value.name || '';
+  $('#menuItemCategory').value = value.category || '';
+  $('#menuItemPrice').value = value.price ?? '';
+  $('#menuItemActive').value = value.active || 'Yes';
+  $('#menuItemSortOrder').value = value.sortOrder ?? (state.adminItems.length + 1);
+  $('#menuItemImageUrl').value = value.imageUrl || '';
+  $('#menuItemDescription').value = value.description || '';
+  $('#menuItemForm').classList.remove('hidden');
+  $('#menuManagerList').classList.add('hidden');
+  $('#newMenuItem').classList.add('hidden');
+  $('#saveMenuItem').textContent = item ? 'Update item' : 'Save item';
+  syncCustomSelects();
+  window.setTimeout(() => $('#menuItemName').focus(),100);
+}
+
+function closeMenuItemForm(){
+  $('#menuItemForm').classList.add('hidden');
+  $('#menuManagerList').classList.remove('hidden');
+  $('#newMenuItem').classList.remove('hidden');
+}
+
+async function refreshMenuItems(){
+  const data = await Api.bootstrap();
+  state.items = data.items || [];
+  state.showImages = Boolean(data.showImages) || String(state.settings.ShowItemImages || 'No').toLowerCase() === 'yes';
+  renderCategories();
+  renderItems();
+}
+
+async function saveMenuItem(){
+  const body = {
+    originalItemId:$('#menuOriginalItemId').value.trim(), itemId:$('#menuItemId').value.trim(),
+    name:$('#menuItemName').value.trim(), category:$('#menuItemCategory').value.trim(),
+    price:Number($('#menuItemPrice').value), active:$('#menuItemActive').value,
+    sortOrder:Number($('#menuItemSortOrder').value), imageUrl:$('#menuItemImageUrl').value.trim(),
+    description:$('#menuItemDescription').value.trim()
+  };
+  if (!body.itemId || !body.name || !body.category || !(body.price >= 0)) return toast('Complete Item ID, name, category and price.',true);
+  const button = $('#saveMenuItem');
+  try{
+    button.disabled = true; button.textContent = 'Saving…';
+    await Api.saveItem(body);
+    await refreshMenuItems();
+    const managed = await Api.manageItems();
+    state.adminItems = managed.items || [];
+    renderMenuCategoryOptions();
+    closeMenuItemForm(); renderMenuManager(); toast(body.originalItemId ? 'Item updated.' : 'Item added.');
+  }catch(e){ toast(e.message || 'Could not save item.',true); }
+  finally{ button.disabled = false; button.textContent = body.originalItemId ? 'Update item' : 'Save item'; }
+}
+
+async function deleteMenuItem(itemId){
+  const item = state.adminItems.find(x => x.id === itemId);
+  if (!item || !await showConfirm(`Delete “${item.name}” from the menu? Past orders will remain unchanged.`,{title:'Delete menu item',confirmText:'Delete',danger:true})) return;
+  try{
+    await Api.deleteItem(itemId);
+    state.adminItems = state.adminItems.filter(x => x.id !== itemId);
+    renderMenuCategoryOptions();
+    await refreshMenuItems(); renderMenuManager(); toast('Item deleted.');
+  }catch(e){ toast(e.message || 'Could not delete item.',true); }
 }
 
 function changeQty(id, delta){
@@ -508,12 +793,13 @@ function removeCartItem(id){
 function ensureCartSheetVisible(){
   const sheet = $('#cartSheet');
   const hasItems = cartLines().length > 0;
+  const hasSession = Boolean(state.session);
   const orderViewActive = $('#view-order').classList.contains('active');
   const modalOpen = $$('.sheet:not(.cart-sheet):not(.hidden):not(.closing)').length > 0;
 
-  if (hasItems && orderViewActive && !modalOpen && sheet.classList.contains('hidden')){
+  if (hasItems && hasSession && orderViewActive && !modalOpen && sheet.classList.contains('hidden')){
     openSheet('cartSheet');
-  }else if ((!hasItems || !orderViewActive) && !sheet.classList.contains('hidden')){
+  }else if ((!hasItems || !hasSession || !orderViewActive) && !sheet.classList.contains('hidden')){
     if (!hasItems){
       $('#cartDetails').classList.remove('expanded');
       $('#cartDetailsToggle').setAttribute('aria-expanded','false');
@@ -624,6 +910,10 @@ function renderSessionWarning(){
   const warning = $('#sessionWarning');
   if (!warning) return;
 
+  const hasSession = Boolean(state.session);
+  $('#orderWorkspace')?.classList.toggle('hidden', !hasSession);
+  $('#sessionRequired')?.classList.toggle('hidden', hasSession);
+
   if (!state.session || !state.session.isStale){
     warning.classList.add('hidden');
     warning.textContent = '';
@@ -728,6 +1018,7 @@ async function closeSession(){
 }
 
 async function loadToday(){
+  setViewLoading('today',true,'Loading today…');
   try{
     const data = await Api.today();
     $('#todayDate').textContent = displayDate(data.value);
@@ -736,6 +1027,8 @@ async function loadToday(){
     $('#todayItems').innerHTML = itemsSalesHtml(data.items || []);
   }catch(e){
     toast(e.message || 'Could not load Today.', true);
+  }finally{
+    setViewLoading('today',false);
   }
 }
 
@@ -750,14 +1043,7 @@ function statsHtml(data){
     ['Online','₹'+money(data.onlineSales),''],
     ['Offline','₹'+money(data.offlineSales),''],
     ['Dine-in',`${money(dineIn.orders)} · ₹${money(dineIn.sales)}`,''],
-    ['Takeaway',`${money(takeaway.orders)} · ₹${money(takeaway.sales)}`,''],
-    ['Operating Exp.','₹'+money(data.operatingExpense),'warn'],
-    ['Investment','₹'+money(data.investmentExpense),'warn'],
-    ['Total Expense','₹'+money(data.totalExpense),'warn'],
-    ['Online Expense','₹'+money(data.onlineExpense),''],
-    ['Offline Expense','₹'+money(data.offlineExpense),''],
-    ['Operating Profit','₹'+money(data.operatingProfit),Number(data.operatingProfit)>=0?'good':'bad'],
-    ['Net Cash Profit','₹'+money(data.netCashProfit),Number(data.netCashProfit)>=0?'good':'bad']
+    ['Takeaway',`${money(takeaway.orders)} · ₹${money(takeaway.sales)}`,'']
   ].map(x => `<div class="stat ${x[2]}"><span>${x[0]}</span><strong>${x[1]}</strong></div>`).join('');
 }
 
@@ -784,13 +1070,19 @@ function itemsSalesHtml(items){
 }
 
 async function loadHistory(reset=false){
+  if (state.historyLoading) return;
+  state.historyLoading = true;
   if (reset){
     state.historyOffset = 0;
     $('#history').innerHTML = '';
+    setViewLoading('history',true,'Loading orders…');
+  }else{
+    $('#loadMore').disabled = true;
+    $('#loadMore').textContent = 'Loading…';
   }
 
   try{
-    const data = await Api.history(state.historyOffset);
+    const data = await Api.history(state.historyOffset,state.historyFilters);
     const html = (data.orders || []).map(order => {
       const cancelled = String(order.status).toLowerCase() === 'cancelled';
       const orderItems = order.items || [];
@@ -834,9 +1126,71 @@ async function loadHistory(reset=false){
 
     state.nextHistoryOffset = data.nextOffset;
     $('#loadMore').classList.toggle('hidden',data.nextOffset == null);
+    const filtered = Number(data.filteredTotal || 0);
+    const total = Number(data.total || 0);
+    $('#historyResultsMeta').textContent = filtered === total
+      ? `${filtered} order${filtered === 1 ? '' : 's'}`
+      : `${filtered} of ${total} orders`;
+    $('#historyResultsMeta').classList.toggle('hidden',total === 0 && !activeHistoryFilterCount());
   }catch(e){
     toast(e.message || 'Could not load history.', true);
+  }finally{
+    state.historyLoading = false;
+    setViewLoading('history',false);
+    $('#loadMore').disabled = false;
+    $('#loadMore').textContent = 'Load more';
   }
+}
+
+function readHistoryFilters(){
+  return {
+    q:$('#historyQuery').value.trim(),
+    from:$('#historyFrom').value,
+    to:$('#historyTo').value,
+    payment:$('#historyPayment').value,
+    orderType:$('#historyOrderType').value,
+    status:$('#historyStatus').value,
+    minAmount:$('#historyMinAmount').value,
+    maxAmount:$('#historyMaxAmount').value,
+    sort:$('#historySort').value || 'newest'
+  };
+}
+
+function activeHistoryFilterCount(){
+  return Object.entries(state.historyFilters).filter(([key,value]) => key !== 'sort' && String(value).trim()).length;
+}
+
+function updateHistoryFilterCount(){
+  const count = activeHistoryFilterCount();
+  $('#historyFilterCount').textContent = count ? `(${count})` : '';
+  $('#historyFilterToggle').classList.toggle('active',count > 0);
+}
+
+function applyHistoryFilters(){
+  const filters = readHistoryFilters();
+  if (filters.from && filters.to && filters.from > filters.to){
+    toast('From date cannot be after To date.',true);
+    return;
+  }
+  if (filters.minAmount && filters.maxAmount && Number(filters.minAmount) > Number(filters.maxAmount)){
+    toast('Minimum amount cannot be greater than maximum amount.',true);
+    return;
+  }
+  state.historyFilters = filters;
+  updateHistoryFilterCount();
+  loadHistory(true);
+}
+
+function clearHistoryFilters(){
+  ['historyQuery','historyFrom','historyTo','historyMinAmount','historyMaxAmount'].forEach(id => $('#'+id).value = '');
+  $('#historyPayment').value = '';
+  $('#historyOrderType').value = '';
+  $('#historyStatus').value = '';
+  $('#historySort').value = 'newest';
+  state.historyFilters = {q:'', from:'', to:'', payment:'', orderType:'', status:'', minAmount:'', maxAmount:'', sort:'newest'};
+  ['historyPayment','historyOrderType','historyStatus','historySort'].forEach(id => syncCustomSelect($('#'+id)));
+  updateHistoryFilterCount();
+  loadHistory(true);
 }
 
 async function cancelOrder(orderId){
@@ -873,22 +1227,123 @@ function loadMoreHistory(){
   }
 }
 
+function setExpensePeriod(period){
+  state.expensePeriod = ['day','month','year'].includes(period) ? period : 'day';
+  const today = state.session?.businessDate || localDateValue();
+  const input = $('#expensePeriodValue');
+  input.type = state.expensePeriod === 'day' ? 'date' : state.expensePeriod === 'month' ? 'month' : 'number';
+  if (state.expensePeriod === 'day') input.value = today;
+  if (state.expensePeriod === 'month') input.value = today.slice(0,7);
+  if (state.expensePeriod === 'year') {
+    input.min = '2020'; input.max = '2100'; input.step = '1'; input.value = today.slice(0,4);
+  }
+  state.expensePeriodValue = input.value;
+  $$('#expensePeriodTabs [data-expense-period]').forEach(button => button.classList.toggle('active',button.dataset.expensePeriod === state.expensePeriod));
+  state.expenseVisibleCount = 20;
+  loadExpenses();
+}
+
+function expensePeriodLabel(period,value){
+  if (period === 'day') return displayDate(value);
+  if (period === 'month') {
+    const [year,month] = value.split('-').map(Number);
+    return new Intl.DateTimeFormat('en-IN',{month:'long',year:'numeric'}).format(new Date(year,month-1,1));
+  }
+  return value;
+}
+
+function loadMoreExpenseCards(){
+  if ($('#loadMoreExpenses').classList.contains('hidden')) return;
+  state.expenseVisibleCount += 20;
+  renderExpenses();
+}
+
 async function loadExpenses(){
+  setViewLoading('expenses',true,'Loading expenses…');
   try{
-    const businessDate = state.session ? state.session.businessDate : localDateValue();
-    const data = await Api.expenses(businessDate);
+    if (!state.expensePeriodValue) {
+      const today = state.session ? state.session.businessDate : localDateValue();
+      state.expensePeriodValue = state.expensePeriod === 'day' ? today : state.expensePeriod === 'month' ? today.slice(0,7) : today.slice(0,4);
+      $('#expensePeriodValue').value = state.expensePeriodValue;
+    }
+    const [data,earnings] = await Promise.all([
+      Api.expenses(state.expensePeriodValue,state.expensePeriod),
+      Api.allTimeSales()
+    ]);
     state.expenses = data.items || [];
-    $('#expenseBusinessDate').textContent = displayDate(data.businessDate);
+    state.expenseVisibleCount = 20;
+    $('#expenseBusinessDate').textContent = expensePeriodLabel(data.period,data.value);
 
-    $('#expenseStats').innerHTML = [
-      ['Operating','₹'+money(data.totals.operating),'warn'],
-      ['Investment','₹'+money(data.totals.investment),'warn'],
-      ['Online','₹'+money(data.totals.online),''],
-      ['Offline','₹'+money(data.totals.offline),'']
-    ].map(x => `<div class="stat ${x[2]}"><span>${x[0]}</span><strong>${x[1]}</strong></div>`).join('');
+    $('#expenseOverview').innerHTML = `
+      <div><span>Total Expense</span><strong>₹${money(data.totals.total)}</strong></div>
+      <div><span>Overall Income</span><strong>₹${money(earnings.sales)}</strong></div>`;
 
-    $('#expenseList').innerHTML = state.expenses.length
-      ? state.expenses.map(x => `<div class="card expense-card">
+    renderExpenses();
+  }catch(e){
+    toast(e.message || 'Could not load expenses.', true);
+  }finally{
+    setViewLoading('expenses',false);
+  }
+}
+
+function renderExpenses(){
+  $$('#expensePayerFilters [data-expense-payer]').forEach(button => {
+    button.classList.toggle('active',button.dataset.expensePayer === state.expensePaidByFilter);
+  });
+  $$('#expensePaymentFilters [data-expense-payment]').forEach(button => {
+    button.classList.toggle('active',button.dataset.expensePayment === state.expensePaymentFilter);
+  });
+  $$('#expenseTypeFilters [data-expense-type]').forEach(button => {
+    button.classList.toggle('active',button.dataset.expenseType === state.expenseTypeFilter);
+  });
+  $$('#expenseSettlementFilters [data-expense-settlement]').forEach(button => {
+    button.classList.toggle('active',button.dataset.expenseSettlement === state.expenseSettlementFilter);
+  });
+  const activeFilterCount = Number(state.expensePaidByFilter !== 'All') + Number(state.expensePaymentFilter !== 'All') + Number(state.expenseTypeFilter !== 'All') + Number(state.expenseSettlementFilter !== 'All');
+  $('#expenseFilterCount').textContent = activeFilterCount ? `(${activeFilterCount})` : '';
+  $('#expenseFilterToggle').classList.toggle('active',activeFilterCount > 0);
+
+  const expenseOwner = x => {
+    const settlementType = String(x.settlementType || 'Own funds');
+    return settlementType !== 'Own funds' && String(x.fundOwner || '').trim()
+      ? String(x.fundOwner).trim()
+      : String(x.paidBy || '').trim();
+  };
+  const filtered = state.expenses.filter(x => {
+    const ownerMatches = state.expensePaidByFilter === 'All' || expenseOwner(x) === state.expensePaidByFilter;
+    const paymentMatches = state.expensePaymentFilter === 'All' || String(x.paymentMethod || '') === state.expensePaymentFilter;
+    const typeMatches = state.expenseTypeFilter === 'All' || String(x.expenseType || '') === state.expenseTypeFilter;
+    const remaining = Number(x.fundRemaining) || 0;
+    const returned = (x.settlements || []).reduce((sum,s) => sum + (Number(s.amount) || 0),0);
+    const settlementStatus = String(x.settlementType || 'Own funds') === 'Own funds' ? 'Own funds' : remaining === 0 ? 'Settled' : returned > 0 ? 'Partially settled' : 'Pending';
+    const settlementMatches = state.expenseSettlementFilter === 'All' || settlementStatus === state.expenseSettlementFilter;
+    return ownerMatches && paymentMatches && typeMatches && settlementMatches;
+  });
+  const filteredTotal = filtered.reduce((sum,x) => sum + (Number(x.amount) || 0),0);
+  const filterLabel = [
+    state.expensePaidByFilter === 'All' ? '' : `${state.expensePaidByFilter} funds`,
+    state.expensePaymentFilter === 'All' ? '' : state.expensePaymentFilter,
+    state.expenseTypeFilter === 'All' ? '' : state.expenseTypeFilter,
+    state.expenseSettlementFilter === 'All' ? '' : state.expenseSettlementFilter
+  ].filter(Boolean).join(' · ');
+  $('#expenseFilterSummary').innerHTML = `<span>${filterLabel ? `${esc(filterLabel)} · ` : ''}${filtered.length} expense${filtered.length === 1 ? '' : 's'}</span><strong>₹${money(filteredTotal)}</strong>`;
+  const visible = filtered.slice(0,state.expenseVisibleCount);
+  $('#loadMoreExpenses').classList.toggle('hidden',visible.length >= filtered.length);
+
+  $('#expenseList').innerHTML = visible.length
+      ? visible.map(x => {
+        const paidBy = String(x.paidBy || '').trim();
+        const settlementType = String(x.settlementType || 'Own funds');
+        const isSettlement = settlementType !== 'Own funds';
+        const payerLine = paidBy ? `<div class="expense-paid">Paid by <strong>${esc(paidBy)}</strong></div>` : '';
+        const remaining = Number(x.fundRemaining) || 0;
+        const returned = (x.settlements || []).reduce((sum,s) => sum + (Number(s.amount) || 0),0);
+        const settlementStatus = remaining === 0 ? 'Settled' : returned > 0 ? 'Partially settled' : 'Pending';
+        const settlementLine = isSettlement ? `<div class="expense-settlement">
+          <strong>${esc(settlementStatus)}</strong>
+          <span>${esc(paidBy || 'Someone')} used ${esc(x.fundOwner || 'fund')} funds · ₹${money(returned)} returned · ₹${money(remaining)} remaining</span>
+        </div>` : '';
+        return `<div class="card expense-card">
           <div class="expense-top">
             <div>
               <strong>${esc(x.description || x.category)}</strong>
@@ -896,14 +1351,61 @@ async function loadExpenses(){
             </div>
             <strong>₹${money(x.amount)}</strong>
           </div>
+          ${payerLine}${settlementLine}
           <div class="expense-actions">
+            ${isSettlement && remaining > 0 ? `<button class="small-btn settlement-return-btn" data-settle-expense="${esc(x.expenseId)}">Return advance</button>` : ''}
             <button class="small-btn" data-edit-expense="${esc(x.expenseId)}">Edit</button>
             <button class="small-btn danger-text" data-delete-expense="${esc(x.expenseId)}">Delete</button>
           </div>
-        </div>`).join('')
-      : '<div class="empty">No expenses for this business day.</div>';
+        </div>`;
+      }).join('')
+      : `<div class="empty">No expenses match these filters.</div>`;
+}
+
+function openSettlementForm(expenseId){
+  const expense = state.expenses.find(x => x.expenseId === expenseId);
+  if (!expense) return toast('Expense not found. Refresh the list.', true);
+  const remaining = Number(expense.fundRemaining) || 0;
+  if (remaining <= 0) return toast('This advance is already settled.', true);
+  $('#settlementExpenseId').value = expense.expenseId;
+  $('#settlementFrom').value = expense.paidBy || 'Chaitali';
+  $('#settlementTo').value = expense.fundOwner || 'Tanvi';
+  $('#settlementAmount').value = remaining;
+  $('#settlementAmount').max = remaining;
+  $('#settlementPayment').value = 'Online';
+  $('#settlementNotes').value = 'Return of unused advance';
+  $('#settlementSummary').innerHTML = `<span>${esc(expense.description || expense.category)}</span><strong>₹${money(remaining)} remaining</strong>`;
+  syncCustomSelects();
+  openSheet('settlementSheet');
+}
+
+async function saveSettlement(){
+  const expenseId = $('#settlementExpenseId').value;
+  const expense = state.expenses.find(x => x.expenseId === expenseId);
+  const body = {
+    expenseId,
+    businessDate:expense?.businessDate || localDateValue(),
+    fromPerson:$('#settlementFrom').value,
+    toPerson:$('#settlementTo').value,
+    amount:Number($('#settlementAmount').value),
+    paymentMethod:$('#settlementPayment').value,
+    notes:$('#settlementNotes').value.trim()
+  };
+  if (!(body.amount > 0)) return toast('Enter a valid return amount.', true);
+  if (body.fromPerson === body.toPerson) return toast('Returned by and returned to must be different.', true);
+  const button = $('#saveSettlement');
+  try{
+    button.disabled = true;
+    button.textContent = 'Saving…';
+    const result = await Api.addSettlement(body);
+    closeSheets();
+    toast(result.remaining === 0 ? 'Advance fully settled.' : `Return saved. ₹${money(result.remaining)} remaining.`);
+    loadExpenses();
   }catch(e){
-    toast(e.message || 'Could not load expenses.', true);
+    toast(e.message || 'Could not save return.', true);
+  }finally{
+    button.disabled = false;
+    button.textContent = 'Save Return';
   }
 }
 
@@ -911,7 +1413,9 @@ function openExpenseForm(expense=null){
   resetExpenseForm();
 
   if (expense){
+    state.editingExpenseId = String(expense.expenseId || '');
     $('#expenseId').value = expense.expenseId;
+    $('#saveExpense').dataset.expenseId = state.editingExpenseId;
     $('#expenseType').value = expense.expenseType;
     $('#expenseFrequency').value = expense.frequency;
     $('#expenseCategory').value = expense.category;
@@ -920,12 +1424,17 @@ function openExpenseForm(expense=null){
     $('#expenseDesc').value = expense.description || '';
     $('#expenseVendor').value = expense.vendor || '';
     $('#expenseNotes').value = expense.notes || '';
+    $('#expensePaidBy').value = expense.paidBy || 'Biren';
+    $('#expenseSettlementType').value = expense.settlementType || 'Own funds';
+    $('#expenseFundOwner').value = expense.fundOwner || expense.paidBy || 'Biren';
+    $('#expenseFundRemaining').value = Number(expense.fundRemaining) || '';
     $('#expenseSheetTitle').textContent = 'Edit Expense';
     $('#saveExpense').textContent = 'Update Expense';
     $('#cancelExpenseEdit').classList.remove('hidden');
   }
 
   syncCustomSelects();
+  renderSettlementFields();
   openSheet('expenseSheet');
 }
 
@@ -939,7 +1448,9 @@ function editExpense(expenseId){
 }
 
 function resetExpenseForm(){
+  state.editingExpenseId = '';
   $('#expenseId').value = '';
+  delete $('#saveExpense').dataset.expenseId;
   $('#expenseType').value = 'Operating';
   $('#expenseFrequency').value = 'Daily';
   $('#expenseCategory').value = 'Ingredients';
@@ -948,14 +1459,29 @@ function resetExpenseForm(){
   $('#expenseDesc').value = '';
   $('#expenseVendor').value = '';
   $('#expenseNotes').value = '';
+  $('#expensePaidBy').value = 'Biren';
+  $('#expenseSettlementType').value = 'Own funds';
+  $('#expenseFundOwner').value = 'Biren';
+  $('#expenseFundRemaining').value = '';
   $('#expenseSheetTitle').textContent = 'Add Expense';
   $('#saveExpense').textContent = 'Save Expense';
   $('#cancelExpenseEdit').classList.add('hidden');
   syncCustomSelects();
+  renderSettlementFields();
+}
+
+function renderSettlementFields(){
+  const ownFunds = $('#expenseSettlementType').value === 'Own funds';
+  $('#settlementFormFields').classList.toggle('hidden',ownFunds);
+  if (ownFunds){
+    $('#expenseFundOwner').value = $('#expensePaidBy').value;
+    $('#expenseFundRemaining').value = '';
+    syncCustomSelect($('#expenseFundOwner'));
+  }
 }
 
 async function saveExpense(){
-  const expenseId = $('#expenseId').value.trim();
+  const expenseId = String(state.editingExpenseId || $('#saveExpense').dataset.expenseId || $('#expenseId').value || '').trim();
   const body = {
     expenseId,
     expenseType:$('#expenseType').value,
@@ -965,7 +1491,11 @@ async function saveExpense(){
     paymentMethod:$('#expensePayment').value,
     description:$('#expenseDesc').value.trim(),
     vendor:$('#expenseVendor').value.trim(),
-    notes:$('#expenseNotes').value.trim()
+    notes:$('#expenseNotes').value.trim(),
+    paidBy:$('#expensePaidBy').value,
+    settlementType:$('#expenseSettlementType').value,
+    fundOwner:$('#expenseSettlementType').value === 'Own funds' ? $('#expensePaidBy').value : $('#expenseFundOwner').value,
+    fundRemaining:$('#expenseSettlementType').value === 'Own funds' ? '' : Number($('#expenseFundRemaining').value || 0)
   };
 
   if (!(body.amount > 0)){
@@ -1015,7 +1545,7 @@ function setDefaultReportInput(){
 
 function setReportType(type){
   state.reportType = type;
-  $$('.segment').forEach(b => b.classList.toggle('active',b.dataset.report === type));
+  $$('#view-reports .segment').forEach(b => b.classList.toggle('active',b.dataset.report === type));
 
   const input = $('#reportValue');
   const today = localDateValue();
@@ -1038,6 +1568,7 @@ function setReportType(type){
 }
 
 async function loadReport(){
+  setViewLoading('reports',true,'Loading report…');
   try{
     const value = String($('#reportValue').value || '').trim();
     if (!value) return;
@@ -1049,6 +1580,8 @@ async function loadReport(){
     $('#reportItems').innerHTML = itemsSalesHtml(data.items || []);
   }catch(e){
     toast(e.message || 'Could not load report.', true);
+  }finally{
+    setViewLoading('reports',false);
   }
 }
 
@@ -1081,7 +1614,7 @@ async function backupData(){
     button.disabled = true;
     button.textContent = 'Backing up…';
     const result = await Api.backupData();
-    toast(`Backup created: ${result.fileName}`);
+    toast(`${result.replaced ? 'Backup updated' : 'Backup created'} · ${result.fileName}`);
   }catch(e){
     toast(e.message || 'Could not create backup.', true);
   }finally{
@@ -1369,6 +1902,7 @@ function closeDatePicker(){
 function toast(message,error=false){
   const el = $('#toast');
   el.textContent = message;
+  el.setAttribute('role',error ? 'alert' : 'status');
   el.classList.toggle('error',error);
   el.classList.add('show');
   clearTimeout(toastTimer);
