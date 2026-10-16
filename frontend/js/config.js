@@ -3,7 +3,7 @@ window.APP_CONFIG = {
   // After that, the same frontend files can be hosted anywhere.
   APPS_SCRIPT_URL: "https://script.google.com/macros/s/AKfycbxLywSetQTQTSaqCLc4jlzQWUd_nv2O9nC4O4VmIsZwvfnL9POCcQCLjF3HpGz6aE25/exec",
 
-  TIMEOUT_MS: 12000,
-  RETRIES: 2,
+  TIMEOUT_MS: 30000,
+  RETRIES: 1,
   HISTORY_LIMIT: 20
 };

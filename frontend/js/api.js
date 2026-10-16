@@ -51,7 +51,15 @@ window.Api = {
           finished = true;
           clearTimeout(timer);
           if (script.parentNode) script.parentNode.removeChild(script);
-          try { delete window[callback]; } catch (_) { window[callback] = undefined; }
+          // Apps Script can finish after the browser timeout, especially on a cold start.
+          // Keep a short-lived no-op callback so that a late JSONP response cannot throw
+          // an uncaught ReferenceError in the page.
+          const lateResponseGuard = () => {};
+          window[callback] = lateResponseGuard;
+          setTimeout(() => {
+            if (window[callback] !== lateResponseGuard) return;
+            try { delete window[callback]; } catch (_) { window[callback] = undefined; }
+          },60000);
         };
 
         const fail = (error) => {
@@ -132,47 +140,47 @@ window.Api = {
   },
 
   openSession(body){
-    return this.request('openSession',{body});
+    return this.request('openSession',{body,retries:0});
   },
 
   closeSession(){
-    return this.request('closeSession',{body:{}});
+    return this.request('closeSession',{body:{},retries:0});
   },
 
   saveOrder(body){
-    return this.request('saveOrder',{body});
+    return this.request('saveOrder',{body,retries:0});
   },
 
   cancelOrder(orderId){
-    return this.request('cancelOrder',{body:{orderId}});
+    return this.request('cancelOrder',{body:{orderId},retries:0});
   },
 
   deleteOrder(orderId){
-    return this.request('deleteOrder',{body:{orderId}});
+    return this.request('deleteOrder',{body:{orderId},retries:0});
   },
 
   addExpense(body){
-    return this.request('addExpense',{body});
+    return this.request('addExpense',{body,retries:0});
   },
 
   updateExpense(body){
-    return this.request('updateExpense',{body});
+    return this.request('updateExpense',{body,retries:0});
   },
 
   deleteExpense(expenseId){
-    return this.request('deleteExpense',{body:{expenseId}});
+    return this.request('deleteExpense',{body:{expenseId},retries:0});
   },
 
   addSettlement(body){
-    return this.request('addSettlement',{body});
+    return this.request('addSettlement',{body,retries:0});
   },
 
   saveItem(body){
-    return this.request('saveItem',{body});
+    return this.request('saveItem',{body,retries:0});
   },
 
   deleteItem(itemId){
-    return this.request('deleteItem',{body:{itemId}});
+    return this.request('deleteItem',{body:{itemId},retries:0});
   },
 
   saveReportPdf(type,value){
