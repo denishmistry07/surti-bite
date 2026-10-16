@@ -317,7 +317,7 @@ function saveItem_(body) {
     if (rowIndex) sheet.getRange(rowIndex,1,1,row.length).setValues([row]);
     else sheet.appendRow(row);
     CacheService.getScriptCache().remove('items-v4');
-    return {itemId:itemId, updated:Boolean(rowIndex)};
+    return {itemId:itemId, updated:Boolean(rowIndex), menu:getItemsPayload_(), managed:getManageItems_()};
   } finally {
     lock.releaseLock();
   }
@@ -334,7 +334,7 @@ function deleteItem_(itemId) {
     if (!rowIndex) throw new Error('Item not found.');
     sheet.deleteRow(rowIndex);
     CacheService.getScriptCache().remove('items-v4');
-    return {itemId:itemId,deleted:true};
+    return {itemId:itemId,deleted:true,menu:getItemsPayload_(),managed:getManageItems_()};
   } finally {
     lock.releaseLock();
   }
@@ -412,6 +412,7 @@ function closeSession_() {
         const businessDate = formatDate_(rows[i][1]);
         sheet.getRange(i+2,5,1,2).setValues([[new Date(),'Closed']]);
         CacheService.getScriptCache().remove('open-session-v1');
+        invalidateBusinessDateCaches_(businessDate,false);
         rebuildSummariesForBusinessDate_(businessDate);
         rebuildExpenseSummary_(businessDate);
         return {
@@ -500,6 +501,7 @@ function saveOrder_(body) {
 
     orderSheet.getRange(orderSheet.getLastRow()+1,1,rows.length,APP.HEADERS.Orders.length).setValues(rows);
     requestSheet.appendRow([clientRequestId, orderId, now]);
+    invalidateBusinessDateCaches_(session.businessDate,true);
 
     // Keep the checkout path limited to the two essential writes above.
     // Reports read live order data, and summary tabs are rebuilt on session close.
@@ -551,10 +553,7 @@ function cancelOrder_(orderId) {
     if (!found) throw new Error('Order not found.');
     if (!alreadyCancelled) sheet.getRange(2,1,rows.length,orderWidth).setValues(rows);
 
-    if (businessDate) {
-      rebuildSummariesForBusinessDate_(businessDate);
-      rebuildExpenseSummary_(businessDate);
-    }
+    if (businessDate) invalidateBusinessDateCaches_(businessDate,true);
 
     return {
       orderId:orderId,
@@ -601,10 +600,7 @@ function deleteOrder_(orderId) {
       requestRowsToDelete.sort((a,b) => b-a).forEach(row => requestSheet.deleteRow(row));
     }
 
-    if (businessDate) {
-      rebuildSummariesForBusinessDate_(businessDate);
-      rebuildExpenseSummary_(businessDate);
-    }
+    if (businessDate) invalidateBusinessDateCaches_(businessDate,true);
 
     return {orderId:orderId, deleted:true, businessDate:businessDate};
   } finally {
@@ -679,12 +675,8 @@ function saveExpenseRow_(expenseId, body) {
     sheet.appendRow(rowValues);
   }
 
-  rebuildSummariesForBusinessDate_(businessDate);
-  rebuildExpenseSummary_(businessDate);
-  if (oldBusinessDate && oldBusinessDate !== businessDate) {
-    rebuildSummariesForBusinessDate_(oldBusinessDate);
-    rebuildExpenseSummary_(oldBusinessDate);
-  }
+  invalidateBusinessDateCaches_(businessDate,false);
+  if (oldBusinessDate && oldBusinessDate !== businessDate) invalidateBusinessDateCaches_(oldBusinessDate,false);
 
   return {
     expenseId:String(rowValues[0]),
@@ -708,8 +700,7 @@ function deleteExpense_(expenseId) {
     const businessDate = formatDate_(sheet.getRange(rowIndex,3).getValue());
     sheet.deleteRow(rowIndex);
 
-    rebuildSummariesForBusinessDate_(businessDate);
-    rebuildExpenseSummary_(businessDate);
+    invalidateBusinessDateCaches_(businessDate,false);
 
     return {expenseId:expenseId, deleted:true};
   } finally {
@@ -764,7 +755,8 @@ function getExpenses_(value, period) {
     value:value,
     businessDate:period === 'day' ? value : '',
     items:rows,
-    totals:calcExpenseTotals_(rows)
+    totals:calcExpenseTotals_(rows),
+    overallIncome:getAllTimeSales_().sales
   };
 }
 
@@ -824,6 +816,9 @@ function getToday_() {
 }
 
 function getAllTimeSales_() {
+  const cache = CacheService.getScriptCache();
+  const cached = cache.get('all-time-sales-v1');
+  if (cached) return JSON.parse(cached);
   const orderIds = {};
   let sales = 0;
   getOrderRows_().forEach(r => {
@@ -831,13 +826,19 @@ function getAllTimeSales_() {
     orderIds[String(r[0] || '')] = true;
     sales += Number(r[6]) || 0;
   });
-  return {sales:sales, orders:Object.keys(orderIds).filter(Boolean).length};
+  const result = {sales:sales, orders:Object.keys(orderIds).filter(Boolean).length};
+  cache.put('all-time-sales-v1', JSON.stringify(result), 300);
+  return result;
 }
 
 function getReport_(type, value) {
   type = String(type || 'day');
   value = String(value || '');
   validateReportInput_(type, value);
+  const cache = CacheService.getScriptCache();
+  const cacheKey = reportCacheKey_(type,value);
+  const cached = cache.get(cacheKey);
+  if (cached) return JSON.parse(cached);
 
   const orderRows = getOrderRows_().filter(r => {
     if (String(r[7] || '').toLowerCase() === 'cancelled') return false;
@@ -939,7 +940,7 @@ function getReport_(type, value) {
     };
   });
 
-  return {
+  const result = {
     type:type,
     value:value,
     businessDate:type === 'day' ? value : '',
@@ -960,6 +961,25 @@ function getReport_(type, value) {
     operatingProfit:sales - expenseTotals.operating,
     netCashProfit:sales - expenseTotals.total
   };
+  const serialized = JSON.stringify(result);
+  if (serialized.length < 90000) cache.put(cacheKey, serialized, 300);
+  return result;
+}
+
+function reportCacheKey_(type,value) {
+  return 'report-v2-' + String(type) + '-' + String(value);
+}
+
+function invalidateBusinessDateCaches_(businessDate, salesChanged) {
+  businessDate = String(businessDate || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(businessDate)) return;
+  const keys = [
+    reportCacheKey_('day',businessDate),
+    reportCacheKey_('month',businessDate.slice(0,7)),
+    reportCacheKey_('year',businessDate.slice(0,4))
+  ];
+  if (salesChanged) keys.push('all-time-sales-v1');
+  CacheService.getScriptCache().removeAll(keys);
 }
 
 function getHistory_(offset, limit, filters) {

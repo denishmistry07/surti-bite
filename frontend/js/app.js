@@ -19,6 +19,7 @@ const state = {
   nextHistoryOffset:null,
   historyLoading:false,
   loadingViews:new Set(),
+  loadedAt:{},
   historyFilters:{q:'', from:'', to:'', payment:'', orderType:'', status:'', minAmount:'', maxAmount:'', sort:'newest'},
   reportType:'day',
   saving:false,
@@ -33,6 +34,9 @@ const state = {
   editingExpenseId:'',
   report:null
 };
+
+let orderSyncRunning = false;
+let orderSyncTimer = 0;
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
@@ -50,10 +54,14 @@ async function init(){
   setOffline(!navigator.onLine);
   initializeLazyLoading();
 
-  window.addEventListener('online',()=>setOffline(false));
+  window.addEventListener('online',()=>{
+    setOffline(false);
+    processOrderOutbox();
+  });
   window.addEventListener('offline',()=>setOffline(true));
 
   await bootstrap();
+  processOrderOutbox();
 }
 
 function setViewLoading(view,loading,label='Loading data…'){
@@ -72,6 +80,14 @@ function setViewLoading(view,loading,label='Loading data…'){
   if (loading) loader.querySelector('strong').textContent = label;
   loader.classList.toggle('hidden',state.loadingViews.size === 0);
   section.setAttribute('aria-busy',String(loading));
+}
+
+function dataIsFresh(key,maxAge=30000){
+  return Date.now() - Number(state.loadedAt[key] || 0) < maxAge;
+}
+
+function markDataLoaded(key){
+  state.loadedAt[key] = Date.now();
 }
 
 function initializeLazyLoading(){
@@ -326,11 +342,13 @@ function showView(view){
   if (view !== 'order') setSearchOpen(false);
   ensureCartSheetVisible();
 
-  if (view === 'today') loadToday();
+  if (view === 'today' && !dataIsFresh('today')) loadToday();
   if (view === 'history') loadHistory(true);
-  if (view === 'expenses') loadExpenses();
-  if (view === 'reports') loadReport();
-  if (view === 'menu') loadMenuManager();
+  const expenseKey = `expenses:${state.expensePeriod}:${state.expensePeriodValue || 'current'}`;
+  const reportKey = `report:${state.reportType}:${$('#reportValue').value || 'current'}`;
+  if (view === 'expenses' && !dataIsFresh(expenseKey)) loadExpenses();
+  if (view === 'reports' && !dataIsFresh(reportKey)) loadReport();
+  if (view === 'menu' && !dataIsFresh('menu',60000)) loadMenuManager();
 }
 
 function toggleSearch(){
@@ -427,6 +445,7 @@ async function loadMenuManager(){
   try{
     const data = await Api.manageItems();
     state.adminItems = data.items || [];
+    markDataLoaded('menu');
     renderMenuCategoryOptions();
     renderMenuManager();
   }catch(e){
@@ -530,10 +549,14 @@ async function saveMenuItem(){
   const button = $('#saveMenuItem');
   try{
     button.disabled = true; button.textContent = 'Saving…';
-    await Api.saveItem(body);
-    await refreshMenuItems();
-    const managed = await Api.manageItems();
-    state.adminItems = managed.items || [];
+    const result = await Api.saveItem(body);
+    state.loadedAt = {};
+    state.items = result.menu?.items || [];
+    state.showImages = Boolean(result.menu?.showImages);
+    state.adminItems = result.managed?.items || [];
+    markDataLoaded('menu');
+    renderCategories();
+    renderItems();
     renderMenuCategoryOptions();
     closeMenuItemForm(); renderMenuManager(); toast(body.originalItemId ? 'Item updated.' : 'Item added.');
   }catch(e){ toast(e.message || 'Could not save item.',true); }
@@ -544,10 +567,14 @@ async function deleteMenuItem(itemId){
   const item = state.adminItems.find(x => x.id === itemId);
   if (!item || !await showConfirm(`Delete “${item.name}” from the menu? Past orders will remain unchanged.`,{title:'Delete menu item',confirmText:'Delete',danger:true})) return;
   try{
-    await Api.deleteItem(itemId);
-    state.adminItems = state.adminItems.filter(x => x.id !== itemId);
+    const result = await Api.deleteItem(itemId);
+    state.loadedAt = {};
+    state.items = result.menu?.items || [];
+    state.showImages = Boolean(result.menu?.showImages);
+    state.adminItems = result.managed?.items || [];
+    markDataLoaded('menu');
     renderMenuCategoryOptions();
-    await refreshMenuItems(); renderMenuManager(); toast('Item deleted.');
+    renderCategories(); renderItems(); renderMenuManager(); toast('Item deleted.');
   }catch(e){ toast(e.message || 'Could not delete item.',true); }
 }
 
@@ -829,41 +856,70 @@ async function saveOrder(){
   const orderFor = state.showOrderReference ? String(state.orderFor || '').trim() : '';
 
   state.saving = true;
+
+  const pending = {
+    clientRequestId:'REQ-' + Date.now() + '-' + Math.random().toString(36).slice(2,8).toUpperCase(),
+    items,
+    paymentMethod:state.payment,
+    orderType:state.orderType,
+    orderFor:orderFor
+  };
+
+  // Persist before closing the cart. A reload, connection loss, or Apps Script
+  // timeout cannot lose the order; the same request ID also makes retries safe.
+  const outbox = Store.get('sb.orderOutbox',[]);
+  outbox.push({payload:pending, queuedAt:new Date().toISOString(), attempts:0});
+  Store.set('sb.orderOutbox',outbox);
+
+  closeActiveOpenOrder(openOrderId);
+  Store.remove('sb.pendingOrder');
+  state.saving = false;
+  state.loadedAt = {};
+  renderItems();
+  renderOpenOrders();
+  closeSheets();
   renderCart();
-  const saveLabel = $('#saveOrder .save-order-label'); if (saveLabel) saveLabel.textContent = 'Saving…';
+  toast(navigator.onLine ? 'Order saved. Syncing…' : 'Order saved locally. It will sync when online.');
+  processOrderOutbox();
+}
 
-  let pending = Store.get('sb.pendingOrder');
-  const samePayload = pending &&
-    JSON.stringify(pending.items) === JSON.stringify(items) &&
-    pending.paymentMethod === state.payment &&
-    pending.orderType === state.orderType &&
-    pending.orderFor === orderFor;
+function scheduleOrderSync(delay=15000){
+  window.clearTimeout(orderSyncTimer);
+  orderSyncTimer = window.setTimeout(processOrderOutbox,delay);
+}
 
-  if (!samePayload){
-    pending = {
-      clientRequestId:'REQ-' + Date.now() + '-' + Math.random().toString(36).slice(2,8).toUpperCase(),
-      items,
-      paymentMethod:state.payment,
-      orderType:state.orderType,
-      orderFor:orderFor
-    };
-    Store.set('sb.pendingOrder',pending);
-  }
+async function processOrderOutbox(){
+  if (orderSyncRunning || !navigator.onLine) return;
+  orderSyncRunning = true;
 
   try{
-    const result = await Api.saveOrder(pending);
-    toast(result.duplicate ? `Already saved ${result.orderId}` : `Saved ${result.orderId}`);
-    closeActiveOpenOrder(openOrderId);
-    Store.remove('sb.pendingOrder');
-    renderItems();
-    renderOpenOrders();
-    closeSheets();
-  }catch(e){
-    toast(e.message || 'Could not save order.', true);
+    let outbox = Store.get('sb.orderOutbox',[]);
+    while (outbox.length){
+      const entry = outbox[0];
+      try{
+        const result = await Api.saveOrder(entry.payload);
+        outbox = Store.get('sb.orderOutbox',[]).filter(item =>
+          item && item.payload && item.payload.clientRequestId !== entry.payload.clientRequestId
+        );
+        Store.set('sb.orderOutbox',outbox);
+        state.loadedAt = {};
+        toast(result.duplicate ? `Order ${result.orderId} already synced` : `Order ${result.orderId} synced`);
+      }catch(e){
+        outbox = Store.get('sb.orderOutbox',[]);
+        const queued = outbox.find(item => item && item.payload &&
+          item.payload.clientRequestId === entry.payload.clientRequestId);
+        if (queued){
+          queued.attempts = Number(queued.attempts || 0) + 1;
+          queued.lastError = e && e.message ? e.message : 'Sync failed';
+          Store.set('sb.orderOutbox',outbox);
+        }
+        toast('Order is saved locally. Sync will retry automatically.',true);
+        scheduleOrderSync(Math.min(60000,15000 * Math.max(1,Number(queued && queued.attempts || 1))));
+        break;
+      }
+    }
   }finally{
-    state.saving = false;
-    const saveLabel = $('#saveOrder .save-order-label'); if (saveLabel) saveLabel.textContent = 'Save & Close';
-    renderCart();
+    orderSyncRunning = false;
   }
 }
 
@@ -985,6 +1041,7 @@ async function openSession(){
       businessDate:$('#sessionDate').value,
       sessionName:$('#sessionName').value
     });
+    state.loadedAt = {};
     renderSessionButton();
     renderSessionWarning();
     closeSheets();
@@ -1005,6 +1062,7 @@ async function closeSession(){
     const button = $('#closeSessionBtn');
     if (button){button.disabled=true;button.textContent='Closing…';}
     await Api.closeSession();
+    state.loadedAt = {};
     state.session = null;
     renderSessionButton();
     renderSessionWarning();
@@ -1025,6 +1083,7 @@ async function loadToday(){
     $('#todayStats').innerHTML = statsHtml(data);
     $('#todaySessions').innerHTML = sessionsHtml(data.sessions || []);
     $('#todayItems').innerHTML = itemsSalesHtml(data.items || []);
+    markDataLoaded('today');
   }catch(e){
     toast(e.message || 'Could not load Today.', true);
   }finally{
@@ -1199,6 +1258,7 @@ async function cancelOrder(orderId){
   })) return;
   try{
     await Api.cancelOrder(orderId);
+    state.loadedAt = {};
     toast(`Cancelled ${orderId}`);
     loadHistory(true);
   }catch(e){
@@ -1213,6 +1273,7 @@ async function deleteOrder(orderId){
 
   try{
     await Api.deleteOrder(orderId);
+    state.loadedAt = {};
     toast(`Deleted ${orderId}`);
     loadHistory(true);
   }catch(e){
@@ -1266,17 +1327,15 @@ async function loadExpenses(){
       state.expensePeriodValue = state.expensePeriod === 'day' ? today : state.expensePeriod === 'month' ? today.slice(0,7) : today.slice(0,4);
       $('#expensePeriodValue').value = state.expensePeriodValue;
     }
-    const [data,earnings] = await Promise.all([
-      Api.expenses(state.expensePeriodValue,state.expensePeriod),
-      Api.allTimeSales()
-    ]);
+    const data = await Api.expenses(state.expensePeriodValue,state.expensePeriod);
     state.expenses = data.items || [];
     state.expenseVisibleCount = 20;
     $('#expenseBusinessDate').textContent = expensePeriodLabel(data.period,data.value);
 
     $('#expenseOverview').innerHTML = `
       <div><span>Total Expense</span><strong>₹${money(data.totals.total)}</strong></div>
-      <div><span>Overall Income</span><strong>₹${money(earnings.sales)}</strong></div>`;
+      <div><span>Overall Income</span><strong>₹${money(data.overallIncome)}</strong></div>`;
+    markDataLoaded(`expenses:${state.expensePeriod}:${state.expensePeriodValue}`);
 
     renderExpenses();
   }catch(e){
@@ -1398,6 +1457,7 @@ async function saveSettlement(){
     button.disabled = true;
     button.textContent = 'Saving…';
     const result = await Api.addSettlement(body);
+    state.loadedAt = {};
     closeSheets();
     toast(result.remaining === 0 ? 'Advance fully settled.' : `Return saved. ₹${money(result.remaining)} remaining.`);
     loadExpenses();
@@ -1510,6 +1570,7 @@ async function saveExpense(){
 
     if (expenseId) await Api.updateExpense(body);
     else await Api.addExpense(body);
+    state.loadedAt = {};
 
     closeSheets();
     resetExpenseForm();
@@ -1532,6 +1593,7 @@ async function deleteExpense(expenseId){
 
   try{
     await Api.deleteExpense(expenseId);
+    state.loadedAt = {};
     toast('Expense deleted.');
     loadExpenses();
   }catch(e){
@@ -1578,6 +1640,7 @@ async function loadReport(){
     $('#reportStats').innerHTML = statsHtml(data);
     $('#reportSessions').innerHTML = sessionsHtml(data.sessions || []);
     $('#reportItems').innerHTML = itemsSalesHtml(data.items || []);
+    markDataLoaded(`report:${state.reportType}:${value}`);
   }catch(e){
     toast(e.message || 'Could not load report.', true);
   }finally{
