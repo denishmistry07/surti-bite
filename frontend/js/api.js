@@ -183,6 +183,10 @@ window.Api = {
     return this.request('deleteItem',{body:{itemId},retries:0});
   },
 
+  updateNavigationSettings(body){
+    return this.request('updateNavigationSettings',{body,retries:0});
+  },
+
   saveReportPdf(type,value){
     return this.request('saveReportPdf',{body:{type,value},retries:0});
   },

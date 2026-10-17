@@ -141,6 +141,8 @@ function doGet(e) {
         result = {success:true, data:saveItem_(body)};
       } else if (action === 'deleteItem') {
         result = {success:true, data:deleteItem_(body.itemId)};
+      } else if (action === 'updateNavigationSettings') {
+        result = {success:true, data:updateNavigationSettings_(body)};
       } else if (action === 'saveReportPdf') {
         result = {success:true, data:saveReportPdf_(body)};
       } else if (action === 'backupData') {
@@ -177,6 +179,7 @@ function doPost(e) {
     if (action === 'addSettlement') return respond_({success:true, data:addSettlement_(body)}, '');
     if (action === 'saveItem') return respond_({success:true, data:saveItem_(body)}, '');
     if (action === 'deleteItem') return respond_({success:true, data:deleteItem_(body.itemId)}, '');
+    if (action === 'updateNavigationSettings') return respond_({success:true, data:updateNavigationSettings_(body)}, '');
     if (action === 'saveReportPdf') return respond_({success:true, data:saveReportPdf_(body)}, '');
     if (action === 'backupData') return respond_({success:true, data:backupData_()}, '');
 
@@ -335,6 +338,26 @@ function deleteItem_(itemId) {
     sheet.deleteRow(rowIndex);
     CacheService.getScriptCache().remove('items-v4');
     return {itemId:itemId,deleted:true,menu:getItemsPayload_(),managed:getManageItems_()};
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function updateNavigationSettings_(body) {
+  const keys = ['ShowTabToday','ShowTabReports','ShowTabHistory','ShowTabExpenses'];
+  const sheet = ss_().getSheetByName(APP.SHEETS.SETTINGS);
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    keys.forEach(key => {
+      if (body[key] === undefined) return;
+      const value = body[key] ? 'Yes' : 'No';
+      const row = findKeyRow_(sheet, key);
+      if (row) sheet.getRange(row,2).setValue(value);
+      else sheet.appendRow([key,value]);
+    });
+    CacheService.getScriptCache().remove('settings-v1');
+    return {settings:getSettings_()};
   } finally {
     lock.releaseLock();
   }
@@ -714,6 +737,9 @@ function getExpenses_(value, period) {
   if (period === 'day') value = normalizeBusinessDate_(value || getActiveBusinessDate_());
   if (period === 'month' && !/^\d{4}-\d{2}$/.test(value)) throw new Error('Choose a valid month.');
   if (period === 'year' && !/^\d{4}$/.test(value)) throw new Error('Choose a valid year.');
+  const cacheKey = readCacheKey_('expenses', {period:period, value:value});
+  const cached = readCachedJson_(cacheKey);
+  if (cached) return cached;
   const matchesPeriod = date => period === 'day' ? date === value : period === 'month' ? date.slice(0,7) === value : date.slice(0,4) === value;
   const rows = getExpenseRows_()
     .filter(r => matchesPeriod(formatDate_(r[2])))
@@ -750,14 +776,19 @@ function getExpenses_(value, period) {
   });
   rows.forEach(x => { x.settlements = settlementsByExpense[x.expenseId] || []; });
 
-  return {
+  const result = {
     period:period,
     value:value,
     businessDate:period === 'day' ? value : '',
     items:rows,
     totals:calcExpenseTotals_(rows),
-    overallIncome:getAllTimeSales_().sales
+    allTime:{
+      sales:getAllTimeSales_().sales,
+      expense:getAllTimeExpense_()
+    }
   };
+  writeCachedJson_(cacheKey, result, 20);
+  return result;
 }
 
 function getSettlementSheet_() {
@@ -804,6 +835,7 @@ function addSettlement_(body) {
     const newRemaining = Math.max(0, remaining - amount);
     expenseSheet.getRange(rowIndex,16).setValue(newRemaining);
     expenseSheet.getRange(rowIndex,14).setValue(newRemaining === 0 ? 'Settled' : 'Advance used');
+    invalidateBusinessDateCaches_(businessDate,false);
 
     return {settlementId:settlementId, expenseId:expenseId, amount:amount, remaining:newRemaining, status:newRemaining === 0 ? 'Settled' : 'Partially settled'};
   } finally {
@@ -829,6 +861,15 @@ function getAllTimeSales_() {
   const result = {sales:sales, orders:Object.keys(orderIds).filter(Boolean).length};
   cache.put('all-time-sales-v1', JSON.stringify(result), 300);
   return result;
+}
+
+function getAllTimeExpense_() {
+  const cache = CacheService.getScriptCache();
+  const cached = cache.get('all-time-expense-v1');
+  if (cached) return Number(cached) || 0;
+  const total = getExpenseRows_().reduce((sum, row) => sum + (Number(row[7]) || 0), 0);
+  cache.put('all-time-expense-v1', String(total), 300);
+  return total;
 }
 
 function getReport_(type, value) {
@@ -973,10 +1014,12 @@ function reportCacheKey_(type,value) {
 function invalidateBusinessDateCaches_(businessDate, salesChanged) {
   businessDate = String(businessDate || '');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(businessDate)) return;
+  bumpReadCacheVersion_();
   const keys = [
     reportCacheKey_('day',businessDate),
     reportCacheKey_('month',businessDate.slice(0,7)),
-    reportCacheKey_('year',businessDate.slice(0,4))
+    reportCacheKey_('year',businessDate.slice(0,4)),
+    'all-time-expense-v1'
   ];
   if (salesChanged) keys.push('all-time-sales-v1');
   CacheService.getScriptCache().removeAll(keys);
@@ -986,6 +1029,9 @@ function getHistory_(offset, limit, filters) {
   offset = Math.max(0, Number(offset) || 0);
   limit = Math.min(100, Math.max(1, Number(limit) || 20));
   filters = filters || {};
+  const cacheKey = readCacheKey_('history', {offset:offset, limit:limit, filters:filters});
+  const cached = readCachedJson_(cacheKey);
+  if (cached) return cached;
 
   const rows = getOrderRows_();
   const map = {};
@@ -1062,12 +1108,53 @@ function getHistory_(offset, limit, filters) {
       return x;
     });
 
-  return {
+  const result = {
     orders:page,
     total:all.length,
     filteredTotal:filtered.length,
+    filteredSales:filtered.reduce((sum, order) => {
+      return String(order.status || '').toLowerCase() === 'cancelled'
+        ? sum
+        : sum + (Number(order.totalAmount) || 0);
+    }, 0),
     nextOffset:(offset + limit < filtered.length) ? offset + limit : null
   };
+  writeCachedJson_(cacheKey, result, 20);
+  return result;
+}
+
+function getReadCacheVersion_() {
+  const cache = CacheService.getScriptCache();
+  const existing = cache.get('read-cache-version-v1');
+  if (existing) return existing;
+  const version = String(Date.now());
+  cache.put('read-cache-version-v1', version, 21600);
+  return version;
+}
+
+function bumpReadCacheVersion_() {
+  const version = String(Date.now()) + '-' + Utilities.getUuid().slice(0,8);
+  CacheService.getScriptCache().put('read-cache-version-v1', version, 21600);
+}
+
+function readCacheKey_(prefix, params) {
+  const digest = Utilities.computeDigest(
+    Utilities.DigestAlgorithm.SHA_256,
+    JSON.stringify(params || {})
+  );
+  const hash = Utilities.base64EncodeWebSafe(digest).replace(/=+$/,'').slice(0,32);
+  return String(prefix) + '-' + getReadCacheVersion_() + '-' + hash;
+}
+
+function readCachedJson_(key) {
+  const value = CacheService.getScriptCache().get(key);
+  if (!value) return null;
+  try { return JSON.parse(value); } catch (err) { return null; }
+}
+
+function writeCachedJson_(key, value, seconds) {
+  const serialized = JSON.stringify(value);
+  if (serialized.length < 90000) CacheService.getScriptCache().put(key, serialized, seconds);
 }
 
 function saveReportPdf_(body) {
@@ -1554,7 +1641,11 @@ function setDefaultSettings_() {
     FileNamePrefix:'Surti Bite',
     ShowItemImages:'No',
     ShowItemDescriptions:'Yes',
-    ShowOrderReference:'No'
+    ShowOrderReference:'No',
+    ShowTabToday:'Yes',
+    ShowTabReports:'Yes',
+    ShowTabHistory:'Yes',
+    ShowTabExpenses:'Yes'
   };
   Object.keys(defaults).forEach(k => upsertSetting_(k, defaults[k]));
 }
@@ -1612,7 +1703,7 @@ function setValidations_() {
   orders.getRange(2,13,Math.max(1,orders.getMaxRows()-1),1).setDataValidation(orderTypes);
 
   const settingsSheet = ss.getSheetByName(APP.SHEETS.SETTINGS);
-  ['ShowItemImages','ShowItemDescriptions','ShowOrderReference'].forEach(key => {
+  ['ShowItemImages','ShowItemDescriptions','ShowOrderReference','ShowTabToday','ShowTabReports','ShowTabHistory','ShowTabExpenses'].forEach(key => {
     const row = findKeyRow_(settingsSheet, key);
     if (row) settingsSheet.getRange(row,2).setDataValidation(yesNo);
   });

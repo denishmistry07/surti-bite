@@ -956,6 +956,7 @@ textarea.input {
 .nav-item {
   position: relative;
   flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -968,6 +969,13 @@ textarea.input {
   font-size: 10px;
   font-weight: 700;
   transition: color .16s ease, transform .16s ease
+}
+
+.nav-item span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap
 }
 
 .nav-item .icon {
@@ -2011,7 +2019,7 @@ textarea.input {
 
 .expense-overview {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3,minmax(0,1fr));
   gap: 7px;
   margin-bottom: 8px
 }
@@ -2037,6 +2045,10 @@ textarea.input {
 .expense-overview strong {
   color: var(--green-900);
   font-size: 13px
+}
+
+.expense-overview .negative strong {
+  color: #b42318
 }
 
 .expense-type-filters {
@@ -2236,6 +2248,32 @@ textarea.input {
   font-size: 10px;
   font-weight: 700
 }
+
+.settings-card { padding: 18px }
+
+.settings-intro { display:flex; align-items:flex-start; gap:11px; margin-bottom:14px }
+.settings-icon { display:grid; width:36px; height:36px; place-items:center; border-radius:12px; background:var(--green-50); color:var(--green-800) }
+.settings-icon .icon { width:19px; height:19px }
+.settings-intro small { display:block; margin-bottom:3px; color:var(--green-700); font-size:9px; font-weight:900; letter-spacing:.1em }
+.settings-intro strong { display:block; color:var(--green-950); font-size:14px }
+.settings-intro p { margin:3px 0 0; color:var(--muted); font-size:10px }
+
+.settings-toggle-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px }
+.setting-toggle { display:flex; align-items:center; justify-content:space-between; gap:9px; min-width:0; padding:12px; border:1px solid var(--line); border-radius:13px; background:#fbfdfb; cursor:pointer }
+.setting-toggle>span:first-child { min-width:0 }
+.setting-toggle strong,.setting-toggle small { display:block }
+.setting-toggle strong { color:var(--green-950); font-size:11px }
+.setting-toggle small { margin-top:3px; color:var(--muted); font-size:9px; line-height:1.3 }
+
+.setting-switch { position:relative; flex:0 0 auto; width:36px; height:21px }
+.setting-switch input { position:absolute; width:1px; height:1px; opacity:0 }
+.setting-switch i { position:absolute; inset:0; border-radius:999px; background:#c9d3cd; transition:background .18s ease }
+.setting-switch i::after { content:""; position:absolute; top:3px; left:3px; width:15px; height:15px; border-radius:50%; background:#fff; box-shadow:0 1px 3px rgba(7,59,39,.2); transition:transform .18s ease }
+.setting-switch input:checked + i { background:var(--green-700) }
+.setting-switch input:checked + i::after { transform:translateX(15px) }
+.setting-switch input:focus-visible + i { outline:3px solid rgba(13,122,74,.22); outline-offset:2px }
+.settings-note { margin:12px 0 0; color:var(--muted); font-size:9px; text-align:center }
+.settings-card .btn { margin-top:12px }
 
 .toast {
   position: fixed;

@@ -40,6 +40,12 @@ let orderSyncTimer = 0;
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
+const TAB_SETTING_KEYS = {
+  today:'ShowTabToday',
+  reports:'ShowTabReports',
+  history:'ShowTabHistory',
+  expenses:'ShowTabExpenses'
+};
 
 document.addEventListener('DOMContentLoaded', init);
 
@@ -307,6 +313,7 @@ function bind(){
   $('#loadReport').onclick = loadReport;
   $('#saveReportPdf').onclick = saveReportPdf;
   $('#backupData').onclick = backupData;
+  $('#saveNavigationSettings').onclick = saveNavigationSettings;
 
   $$('#view-reports .segment').forEach(b => b.onclick = () => setReportType(b.dataset.report));
 }
@@ -321,6 +328,7 @@ async function bootstrap(){
     state.showItemDescriptions = String(state.settings.ShowItemDescriptions || 'Yes').toLowerCase() === 'yes';
     state.showOrderReference = String(state.settings.ShowOrderReference || 'No').toLowerCase() === 'yes';
     state.session = data.session || null;
+    applyNavigationSettings();
 
     renderSessionButton();
     renderSessionWarning();
@@ -334,7 +342,45 @@ async function bootstrap(){
   }
 }
 
+function isNavigationTabEnabled(view){
+  const key = TAB_SETTING_KEYS[view];
+  return !key || String(state.settings[key] || 'Yes').toLowerCase() === 'yes';
+}
+
+function applyNavigationSettings(){
+  Object.entries(TAB_SETTING_KEYS).forEach(([view,key]) => {
+    const enabled = isNavigationTabEnabled(view);
+    $(`.nav-item[data-view="${view}"]`)?.classList.toggle('hidden',!enabled);
+    const input = $('#settingTab' + view.charAt(0).toUpperCase() + view.slice(1));
+    if (input) input.checked = enabled;
+  });
+}
+
+async function saveNavigationSettings(){
+  const body = {
+    ShowTabToday:$('#settingTabToday').checked,
+    ShowTabReports:$('#settingTabReports').checked,
+    ShowTabHistory:$('#settingTabHistory').checked,
+    ShowTabExpenses:$('#settingTabExpenses').checked
+  };
+  const button = $('#saveNavigationSettings');
+  try{
+    button.disabled = true;
+    button.textContent = 'Saving…';
+    const result = await Api.updateNavigationSettings(body);
+    state.settings = result.settings || state.settings;
+    applyNavigationSettings();
+    toast('Navigation settings saved.');
+  }catch(e){
+    toast(e.message || 'Could not save navigation settings.',true);
+  }finally{
+    button.disabled = false;
+    button.textContent = 'Save navigation';
+  }
+}
+
 function showView(view){
+  if (!isNavigationTabEnabled(view)) return showView('order');
   $$('.view').forEach(v => v.classList.remove('active'));
   $('#view-'+view).classList.add('active');
   document.body.classList.toggle('menu-view-active',view === 'menu');
@@ -1187,9 +1233,11 @@ async function loadHistory(reset=false){
     $('#loadMore').classList.toggle('hidden',data.nextOffset == null);
     const filtered = Number(data.filteredTotal || 0);
     const total = Number(data.total || 0);
-    $('#historyResultsMeta').textContent = filtered === total
+    const filteredSales = Number(data.filteredSales || 0);
+    const orderLabel = filtered === total
       ? `${filtered} order${filtered === 1 ? '' : 's'}`
       : `${filtered} of ${total} orders`;
+    $('#historyResultsMeta').textContent = `${orderLabel} · Filtered sales ₹${money(filteredSales)}`;
     $('#historyResultsMeta').classList.toggle('hidden',total === 0 && !activeHistoryFilterCount());
   }catch(e){
     toast(e.message || 'Could not load history.', true);
@@ -1332,9 +1380,14 @@ async function loadExpenses(){
     state.expenseVisibleCount = 20;
     $('#expenseBusinessDate').textContent = expensePeriodLabel(data.period,data.value);
 
+    const allTimeSales = Number(data.allTime?.sales ?? data.overallIncome) || 0;
+    const allTimeExpense = Number(data.allTime?.expense) || 0;
+    const netCash = allTimeSales - allTimeExpense;
+    const netCashLabel = netCash < 0 ? 'Net Cash Loss' : 'Net Cash Profit';
     $('#expenseOverview').innerHTML = `
-      <div><span>Total Expense</span><strong>₹${money(data.totals.total)}</strong></div>
-      <div><span>Overall Income</span><strong>₹${money(data.overallIncome)}</strong></div>`;
+      <div><span>All-time Sales</span><strong>₹${money(allTimeSales)}</strong></div>
+      <div><span>All-time Expense</span><strong>₹${money(allTimeExpense)}</strong></div>
+      <div class="${netCash < 0 ? 'negative' : ''}"><span>${netCashLabel}</span><strong>${netCash < 0 ? '−' : ''}₹${money(Math.abs(netCash))}</strong></div>`;
     markDataLoaded(`expenses:${state.expensePeriod}:${state.expensePeriodValue}`);
 
     renderExpenses();
