@@ -19,6 +19,7 @@ This pack describes the implementation in this repository. It is a handover base
 | [09 — Security and limitations](09-SECURITY-LIMITATIONS.md) | Access, privacy, integrity, known limits | Owner, technical team |
 | [10 — User guide](10-USER-GUIDE.md) | Practical operating instructions | Cashier, owner |
 | [11 — Maintenance and traceability](11-MAINTENANCE-TRACEABILITY.md) | Requirement-to-code mapping and change checklist | Maintainers |
+| [12 — Receipt printing](12-RECEIPT-PRINTING.md) | Printing settings, checkout flow, reprints and printer setup | Operators, administrators |
 
 ## Start here
 

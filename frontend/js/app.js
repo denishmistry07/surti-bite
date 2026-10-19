@@ -126,6 +126,7 @@ function observeCartSheetSize(){
 }
 
 function bind(){
+  Receipts.bind();
   $('#retryOrderSync').onclick=processOrderOutbox;
   $('#refreshOperationalStatus').onclick=loadOperationalStatus;
   $$('.nav-item').forEach(b => b.onclick = () => showView(b.dataset.view));
@@ -311,6 +312,8 @@ function bind(){
   $('#loadMoreExpenses').onclick = loadMoreExpenseCards;
 
   $('#history').onclick = e => {
+    const print=e.target.closest('[data-print-order]');
+    if(print){const order=state.historyOrders.find(item=>item.orderId===print.dataset.printOrder);if(order)Receipts.show(order);return;}
     const edit = e.target.closest('[data-edit-order]');
     const cancel = e.target.closest('[data-cancel-order]');
     const del = e.target.closest('[data-delete-order]');
@@ -362,6 +365,7 @@ function isNavigationTabEnabled(view){
 }
 
 function applyNavigationSettings(){
+  Receipts.applySettings(state.settings);
   Object.entries(TAB_SETTING_KEYS).forEach(([view,key]) => {
     const enabled = isNavigationTabEnabled(view);
     $(`.nav-item[data-view="${view}"]`)?.classList.toggle('hidden',!enabled);
@@ -978,7 +982,7 @@ async function saveOrder(){
   if (state.editingOrderId){
     const editingOrderId = state.editingOrderId;
     try{
-      await Api.updateOrder({...pending,orderId:editingOrderId});
+      const updatedOrder=await Api.updateOrder({...pending,orderId:editingOrderId});
       closeActiveOpenOrder(openOrderId);
       state.saving = false;
       state.loadedAt = {};
@@ -987,6 +991,7 @@ async function saveOrder(){
       renderOpenOrders();
       closeSheets();
       renderCart();
+      if(Receipts.get().enabled)Receipts.saved(editingOrderId,updatedOrder);
       showView('history');
       await loadHistory(true);
       toast(`Order ${editingOrderId} updated.`);
@@ -1001,7 +1006,7 @@ async function saveOrder(){
   // Persist before closing the cart. A reload, connection loss, or Apps Script
   // timeout cannot lose the order; the same request ID also makes retries safe.
   const outbox = Store.get('sb.orderOutbox',[]);
-  outbox.push({payload:pending, queuedAt:new Date().toISOString(), attempts:0});
+  outbox.push({payload:pending, queuedAt:new Date().toISOString(), attempts:0,printBill:Receipts.get().enabled});
   Store.set('sb.orderOutbox',outbox);
 
   closeActiveOpenOrder(openOrderId);
@@ -1039,6 +1044,7 @@ async function processOrderOutbox(){
         renderOrderSyncStatus();
         state.loadedAt = {};
         toast(result.duplicate ? `Order ${result.orderId} already synced` : `Order ${result.orderId} synced`);
+        if(entry.printBill)Receipts.saved(result.orderId,result);
       }catch(e){
         outbox = Store.get('sb.orderOutbox',[]);
         const queued = outbox.find(item => item && item.payload &&
@@ -1063,8 +1069,9 @@ function renderOrderSyncStatus(){
   const host=$('#orderSyncStatus');
   if(!host)return;
   const outbox=Store.get('sb.orderOutbox',[]);
-  host.classList.toggle('hidden',!outbox.length);
   const failed=outbox.some(entry=>entry.lastError);
+  const needsAttention=outbox.length>0 && !orderSyncRunning && (failed || !navigator.onLine);
+  host.classList.toggle('hidden',!needsAttention);
   const status=!navigator.onLine?'Waiting for internet':orderSyncRunning?'Syncing':failed?'Sync failed — retry pending':'Waiting to sync';
   host.querySelector('span').textContent=`${status}: ${outbox.length} order${outbox.length===1?'':'s'} saved on this device`;
   $('#retryOrderSync').disabled=orderSyncRunning||!navigator.onLine;
@@ -1349,7 +1356,7 @@ async function loadHistory(reset=false){
         <div class="history-items">${itemDetails || '<div class="empty compact">No item details.</div>'}</div>
         <div class="history-footer">
           <div><strong>${money(order.totalQty)} dishes</strong><small>${esc(order.paymentMethod)} payment</small></div>
-          <div class="history-actions">${editButton}${cancelButton}${deleteButton}</div>
+          <div class="history-actions">${cancelled?'':`<button class="small-btn" data-print-order="${esc(order.orderId)}">Print</button>`}${editButton}${cancelButton}${deleteButton}</div>
         </div>
       </div>`;
     }).join('');

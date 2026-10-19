@@ -8,11 +8,11 @@ const context={Store,navigator:{onLine:true},document:{addEventListener(){},quer
 vm.createContext(context);vm.runInContext(fs.readFileSync('frontend/js/app.js','utf8'),context);
 context.renderOrderSyncStatus();assert(hidden);
 data.set('sb.orderOutbox',[{payload:{clientRequestId:'TEST'}}]);
-context.renderOrderSyncStatus();assert(!hidden);assert.match(text.textContent,/Waiting to sync/);assert(!retry.disabled);
-context.navigator.onLine=false;context.renderOrderSyncStatus();assert.match(text.textContent,/Waiting for internet/);assert(retry.disabled);
+context.renderOrderSyncStatus();assert(hidden,'normal pending sync is quiet');assert(!retry.disabled);
+context.navigator.onLine=false;context.renderOrderSyncStatus();assert(!hidden);assert.match(text.textContent,/Waiting for internet/);assert(retry.disabled);
 context.navigator.onLine=true;data.get('sb.orderOutbox')[0].lastError='failed';
-context.renderOrderSyncStatus();assert.match(text.textContent,/Sync failed/);
-vm.runInContext('orderSyncRunning=true',context);context.renderOrderSyncStatus();assert.match(text.textContent,/Syncing/);assert(retry.disabled);
+context.renderOrderSyncStatus();assert(!hidden);assert.match(text.textContent,/Sync failed/);
+vm.runInContext('orderSyncRunning=true',context);context.renderOrderSyncStatus();assert(hidden,'retry hides the warning while syncing');assert(retry.disabled);
 data.set('sb.orderOutbox',[]);context.renderOrderSyncStatus();assert(hidden);
 console.log('PASS: empty/pending/offline/failed/syncing banner states and retry controls');
 

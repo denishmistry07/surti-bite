@@ -148,6 +148,8 @@ function doGet(e) {
         result = {success:true, data:deleteItem_(body.itemId)};
       } else if (action === 'updateNavigationSettings') {
         result = {success:true, data:updateNavigationSettings_(body)};
+      } else if (action === 'updatePrintSettings') {
+        result = {success:true,data:updatePrintSettings_(body)};
       } else if (action === 'saveReportPdf') {
         result = {success:true, data:saveReportPdf_(body)};
       } else if (action === 'backupData') {
@@ -186,6 +188,7 @@ function doPost(e) {
     if (action === 'saveItem') return respond_({success:true, data:saveItem_(body)}, '');
     if (action === 'deleteItem') return respond_({success:true, data:deleteItem_(body.itemId)}, '');
     if (action === 'updateNavigationSettings') return respond_({success:true, data:updateNavigationSettings_(body)}, '');
+    if (action === 'updatePrintSettings') return respond_({success:true,data:updatePrintSettings_(body)}, '');
     if (action === 'saveReportPdf') return respond_({success:true, data:saveReportPdf_(body)}, '');
     if (action === 'backupData') return respond_({success:true, data:backupData_()}, '');
 
@@ -349,6 +352,20 @@ function deleteItem_(itemId) {
   } finally {
     lock.releaseLock();
   }
+}
+
+function updatePrintSettings_(body) {
+  if(typeof body.PrintBillEnabled!=='boolean')throw new Error('Print setting must be enabled or disabled.');
+  const lock=LockService.getScriptLock();
+  lock.waitLock(15000);
+  try{
+    const sheet=ss_().getSheetByName(APP.SHEETS.SETTINGS);
+    const row=findKeyRow_(sheet,'PrintBillEnabled');
+    const value=body.PrintBillEnabled?'Yes':'No';
+    if(row)sheet.getRange(row,2).setValue(value);else sheet.appendRow(['PrintBillEnabled',value]);
+    CacheService.getScriptCache().remove('settings-v1');
+    return {settings:getSettings_()};
+  }finally{lock.releaseLock();}
 }
 
 function updateNavigationSettings_(body) {
@@ -547,12 +564,14 @@ function saveOrder_(body) {
     invalidateBusinessDateCaches_(session.businessDate,true);
 
     // Keep the checkout path limited to the two essential writes above.
-    // Reports read live order data, and summary tabs are rebuilt on session close.
+    // Summary refresh is queued; receipt rows are returned without an extra read.
 
     return {
       duplicate:false,
       orderId:orderId,
       businessDate:session.businessDate,
+      dateTime:formatDateTime_(now),
+      items:validated.map(item=>({itemId:item.id,name:item.name,qty:item.qty,total:item.total})),
       saleTime:saleTime,
       paymentMethod:paymentMethod,
       orderType:orderType,
@@ -646,6 +665,13 @@ function updateOrder_(body) {
     return {
       orderId:orderId,
       updated:true,
+      dateTime:formatDateTime_(original[1]),
+      businessDate:formatDate_(original[9]),
+      saleTime:formatTime_(original[10]),
+      paymentMethod:paymentMethod,
+      orderType:orderType,
+      orderFor:orderFor,
+      items:validated.map(item=>({itemId:item.id,name:item.name,qty:item.qty,total:item.total})),
       totalAmount:validated.reduce((sum,item) => sum + item.total,0),
       totalQty:validated.reduce((sum,item) => sum + item.qty,0)
     };
@@ -1790,7 +1816,8 @@ function setDefaultSettings_() {
     ShowTabToday:'Yes',
     ShowTabReports:'Yes',
     ShowTabHistory:'Yes',
-    ShowTabExpenses:'Yes'
+    ShowTabExpenses:'Yes',
+    PrintBillEnabled:'No'
   };
   Object.keys(defaults).forEach(k => upsertSetting_(k, defaults[k]));
 }
@@ -1848,7 +1875,7 @@ function setValidations_() {
   orders.getRange(2,13,Math.max(1,orders.getMaxRows()-1),1).setDataValidation(orderTypes);
 
   const settingsSheet = ss.getSheetByName(APP.SHEETS.SETTINGS);
-  ['ShowItemImages','ShowItemDescriptions','ShowOrderReference','ShowTabToday','ShowTabReports','ShowTabHistory','ShowTabExpenses'].forEach(key => {
+  ['ShowItemImages','ShowItemDescriptions','ShowOrderReference','ShowTabToday','ShowTabReports','ShowTabHistory','ShowTabExpenses','PrintBillEnabled'].forEach(key => {
     const row = findKeyRow_(settingsSheet, key);
     if (row) settingsSheet.getRange(row,2).setDataValidation(yesNo);
   });

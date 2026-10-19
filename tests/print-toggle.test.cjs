@@ -1,0 +1,25 @@
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+const nodes={};
+const node=key=>nodes[key]||(nodes[key]={checked:false,disabled:false,value:'',textContent:'',dataset:{}});
+let resolveRequest,rejectRequest,payload;
+const context={window:{},Store:{get:()=>({})},document:{querySelector:node,addEventListener(){}},Api:{request:(_action,options)=>{payload=options.body;return new Promise((resolve,reject)=>{resolveRequest=resolve;rejectRequest=reject;});}}};
+vm.createContext(context);vm.runInContext(fs.readFileSync('frontend/js/receipts.js','utf8'),context);
+const receipts=context.window.Receipts;receipts.bind();receipts.applySettings({PrintBillEnabled:'Yes'});
+(async()=>{
+  const input=node('#receiptEnabled');input.checked=false;
+  const first=input.onchange({target:input});
+  assert(input.disabled);assert.equal(payload.PrintBillEnabled,false);
+  resolveRequest({settings:{PrintBillEnabled:'No'}});await first;
+  assert.equal(receipts.get().enabled,false);assert.equal(input.checked,false);assert(!input.disabled);
+  input.checked=true;const failed=input.onchange({target:input});rejectRequest(new Error('offline'));await failed;
+  assert.equal(input.checked,false);assert.equal(receipts.get().enabled,false);
+  input.checked=true;const mismatched=input.onchange({target:input});resolveRequest({settings:{PrintBillEnabled:'No'}});await mismatched;
+  assert.equal(input.checked,false);assert.match(node('#receiptSettingsNote').textContent,/not saved/);
+  input.checked=true;const last=input.onchange({target:input});resolveRequest({settings:{PrintBillEnabled:'Yes'}});await last;
+  assert.equal(input.checked,true);assert.equal(receipts.get().enabled,true);
+  input.checked=false;const unsupported=input.onchange({target:input});rejectRequest(new Error('Unknown action'));await unsupported;
+  assert.equal(input.checked,true);
+  assert.match(node('#receiptToggleStatus').textContent,/Backend update required/);
+  assert.equal(node('#receiptToggleStatus').dataset.state,'error');
+  console.log('PASS: auto-save OFF/ON, disabled while pending, failure rollback, mismatched response rejected');
+})().catch(error=>{console.error(error);process.exitCode=1;});

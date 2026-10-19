@@ -1,0 +1,14 @@
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+const context={};vm.createContext(context);vm.runInContext(fs.readFileSync('apps-script/Code.gs','utf8'),context);
+const rows=[['ShopName','Surti Bite'],['ShowTabToday','Yes']];
+context.LockService={getScriptLock:()=>({waitLock(){},releaseLock(){}})};
+context.ss_=()=>({getSheetByName:()=>({getRange:row=>({setValue:value=>rows[row-2][1]=value}),appendRow:row=>rows.push(Array.from(row))})});
+context.findKeyRow_=(_,key)=>{const i=rows.findIndex(row=>row[0]===key);return i<0?0:i+2;};
+context.CacheService={getScriptCache:()=>({remove(){}})};
+context.getSettings_=()=>Object.fromEntries(rows);
+assert.equal(context.updatePrintSettings_({PrintBillEnabled:true}).settings.PrintBillEnabled,'Yes');
+assert.equal(context.updatePrintSettings_({PrintBillEnabled:false}).settings.PrintBillEnabled,'No');
+assert.equal(rows.filter(row=>row[0]==='PrintBillEnabled').length,1);
+assert.equal(rows[1][1],'Yes');
+assert.throws(()=>context.updatePrintSettings_({PrintBillEnabled:'No'}),/enabled or disabled/);
+console.log('PASS: shared print flag insert, enable/disable update, strict boolean validation and unrelated settings preserved');

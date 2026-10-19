@@ -24,6 +24,7 @@ const sheet = {
 context.ss_=()=>({getSheetByName:()=>sheet});
 context.ensureOrderSchema_=()=>{};
 context.LockService={getScriptLock:()=>({waitLock(){},releaseLock(){}})};
+context.Utilities={formatDate:date=>date.toISOString()};
 context.getItemsPayload_=()=>({items:[{id:'L001',name:'Oil Locho',price:75}]});
 let invalidated='';
 context.invalidateBusinessDateCaches_=date=>{invalidated=date;};
@@ -36,6 +37,9 @@ failWrite=false;
 const result=context.updateOrder_(payload);
 assert.equal(result.totalAmount,170,'existing item keeps historical ₹50 price');
 assert.equal(result.totalQty,3,'adjustment does not count as a dish');
+assert.equal(result.items.length,2,'confirmed response includes receipt rows');
+assert.equal(result.items[0].total,150);
+assert.equal(result.paymentMethod,'Offline');
 assert.equal(data.filter(row=>row[0]==='ORD-1').length,2);
 assert.equal(data.find(row=>row[0]==='ORD-1')[9],'2026-10-15');
 assert.equal(invalidated,'2026-10-15');

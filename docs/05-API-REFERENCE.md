@@ -43,6 +43,7 @@ History default limit is 20; server limit is clamped to 1–100. Sort choices ar
 | saveItem | originalItemId, itemId, name, category, price, active, sortOrder, imageUrl, description, weightG | Creates/updates product |
 | deleteItem | itemId | Removes product catalogue row |
 | updateNavigationSettings | ShowTabToday, ShowTabReports, ShowTabHistory, ShowTabExpenses | Stores enabled flags as settings |
+| updatePrintSettings | PrintBillEnabled (boolean) | Saves shared print on/off as Yes/No in Settings |
 | saveReportPdf | type, value | Creates report PDF in Drive and returns file metadata/URL |
 | backupData | None | Existing manual-backup workflow |
 
