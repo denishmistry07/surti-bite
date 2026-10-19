@@ -1,5 +1,9 @@
 # Surti Bite Portable Web v2
 
+## Full system documentation
+
+The [documentation pack](docs/README.md) includes the BRD, functional specification, architecture, data dictionary, API reference, deployment, backup/recovery runbook, test plan, security limitations and operator guide. Start there for business or technical handover.
+
 This build is hosting-platform independent.
 
 ## Architecture

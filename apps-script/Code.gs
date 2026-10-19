@@ -21,7 +21,7 @@ const APP = {
     EXPENSE_SUMMARY: 'ExpenseSummary'
   },
   HEADERS: {
-    Items: ['ItemID','ItemName','Category','Price','Active','SortOrder','ImageURL','Description'],
+    Items: ['ItemID','ItemName','Category','Price','Active','SortOrder','ImageURL','Description','WeightG'],
     Orders: ['OrderID','DateTime','ItemID','ItemName','Qty','UnitPrice','Total','Status','PaymentMethod','BusinessDate','SaleTime','SessionID','OrderType','OrderFor'],
     Settings: ['Key','Value'],
     DailySummary: ['Date','Orders','Dishes','Sales','BestSeller','ItemJSON','UpdatedAt','OnlineSales','OfflineSales'],
@@ -64,6 +64,7 @@ function setupSystem() {
   const cache = CacheService.getScriptCache();
   cache.remove('items-v3');
   cache.remove('items-v4');
+  cache.remove('items-v5');
   cache.remove('settings-v1');
   cache.remove('open-session-v1');
   cache.remove('orders-schema-v2');
@@ -85,6 +86,8 @@ function doGet(e) {
 
     if (action === 'health') {
       result = {success:true, data:{status:'online', spreadsheetId:APP.SPREADSHEET_ID}};
+    } else if (action === 'operationalStatus') {
+      result = {success:true,data:getOperationalStatus_()};
     } else if (action === 'bootstrap') {
       result = {success:true, data:getBootstrap_()};
     } else if (action === 'items') {
@@ -125,6 +128,8 @@ function doGet(e) {
         result = {success:true, data:closeSession_()};
       } else if (action === 'saveOrder') {
         result = {success:true, data:saveOrder_(body)};
+      } else if (action === 'updateOrder') {
+        result = {success:true, data:updateOrder_(body)};
       } else if (action === 'cancelOrder') {
         result = {success:true, data:cancelOrder_(body.orderId)};
       } else if (action === 'deleteOrder') {
@@ -171,6 +176,7 @@ function doPost(e) {
     if (action === 'openSession') return respond_({success:true, data:openSession_(body)}, '');
     if (action === 'closeSession') return respond_({success:true, data:closeSession_()}, '');
     if (action === 'saveOrder') return respond_({success:true, data:saveOrder_(body)}, '');
+    if (action === 'updateOrder') return respond_({success:true, data:updateOrder_(body)}, '');
     if (action === 'cancelOrder') return respond_({success:true, data:cancelOrder_(body.orderId)}, '');
     if (action === 'deleteOrder') return respond_({success:true, data:deleteOrder_(body.orderId)}, '');
     if (action === 'addExpense') return respond_({success:true, data:addExpense_(body)}, '');
@@ -254,7 +260,7 @@ function getSettings_() {
 
 function getItemsPayload_() {
   const cache = CacheService.getScriptCache();
-  const cached = cache.get('items-v4');
+  const cached = cache.get('items-v5');
   if (cached) return JSON.parse(cached);
 
   const settings = getSettings_();
@@ -262,7 +268,7 @@ function getItemsPayload_() {
   const sheet = ss_().getSheetByName(APP.SHEETS.ITEMS);
   if (!sheet || sheet.getLastRow() < 2) return {showImages:showImages, items:[]};
 
-  const rows = sheet.getRange(2,1,sheet.getLastRow()-1,8).getValues();
+  const rows = sheet.getRange(2,1,sheet.getLastRow()-1,9).getValues();
   const items = rows
     .filter(r => String(r[4] || '').toLowerCase() === 'yes')
     .map(r => ({
@@ -272,13 +278,14 @@ function getItemsPayload_() {
       price: Number(r[3]) || 0,
       sortOrder: Number(r[5]) || 999,
       imageUrl: showImages ? String(r[6] || '') : '',
-      description: String(r[7] || '').trim()
+      description: String(r[7] || '').trim(),
+      weightG: Math.max(0, Number(r[8]) || 0)
     }))
     .filter(i => i.id && i.name)
     .sort((a,b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
 
   const payload = {showImages:showImages, items:items};
-  cache.put('items-v4', JSON.stringify(payload), APP.CACHE_SECONDS);
+  cache.put('items-v5', JSON.stringify(payload), APP.CACHE_SECONDS);
   return payload;
 }
 
@@ -290,7 +297,7 @@ function getManageItems_() {
     .map(r => ({
       id:String(r[0] || ''), name:String(r[1] || ''), category:String(r[2] || 'Other'),
       price:Number(r[3]) || 0, active:String(r[4] || 'Yes'), sortOrder:Number(r[5]) || 999,
-      imageUrl:String(r[6] || ''), description:String(r[7] || '')
+      imageUrl:String(r[6] || ''), description:String(r[7] || ''), weightG:Math.max(0,Number(r[8]) || 0)
     }))
     .sort((a,b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
   return {items:items};
@@ -316,10 +323,11 @@ function saveItem_(body) {
     const rowIndex = findIdRow_(sheet, lookupId);
     if (originalItemId && originalItemId !== itemId && findIdRow_(sheet, itemId)) throw new Error('Item ID already exists.');
     if (!originalItemId && rowIndex) throw new Error('Item ID already exists. Edit the existing item instead.');
-    const row = [itemId,name,category,price,active,sortOrder,String(body.imageUrl || '').trim(),String(body.description || '').trim()];
+    const weightG = Math.max(0,Number(body.weightG) || 0);
+    const row = [itemId,name,category,price,active,sortOrder,String(body.imageUrl || '').trim(),String(body.description || '').trim(),weightG];
     if (rowIndex) sheet.getRange(rowIndex,1,1,row.length).setValues([row]);
     else sheet.appendRow(row);
-    CacheService.getScriptCache().remove('items-v4');
+    CacheService.getScriptCache().remove('items-v5');
     return {itemId:itemId, updated:Boolean(rowIndex), menu:getItemsPayload_(), managed:getManageItems_()};
   } finally {
     lock.releaseLock();
@@ -336,7 +344,7 @@ function deleteItem_(itemId) {
     const rowIndex = findIdRow_(sheet,itemId);
     if (!rowIndex) throw new Error('Item not found.');
     sheet.deleteRow(rowIndex);
-    CacheService.getScriptCache().remove('items-v4');
+    CacheService.getScriptCache().remove('items-v5');
     return {itemId:itemId,deleted:true,menu:getItemsPayload_(),managed:getManageItems_()};
   } finally {
     lock.releaseLock();
@@ -436,8 +444,6 @@ function closeSession_() {
         sheet.getRange(i+2,5,1,2).setValues([[new Date(),'Closed']]);
         CacheService.getScriptCache().remove('open-session-v1');
         invalidateBusinessDateCaches_(businessDate,false);
-        rebuildSummariesForBusinessDate_(businessDate);
-        rebuildExpenseSummary_(businessDate);
         return {
           sessionId: String(rows[i][0]),
           businessDate: businessDate,
@@ -454,6 +460,7 @@ function closeSession_() {
 
 function saveOrder_(body) {
   const items = Array.isArray(body.items) ? body.items : [];
+  const adjustedAmount = Number(body.adjustedAmount || 0);
   const paymentMethod = String(body.paymentMethod || '').trim();
   const orderType = String(body.orderType || '').trim();
   const orderFor = String(body.orderFor || '').trim().slice(0,60);
@@ -467,6 +474,9 @@ function saveOrder_(body) {
     throw new Error('Choose Dine-in or Takeaway.');
   }
   if (!clientRequestId) throw new Error('Missing request ID.');
+  if (!isFinite(adjustedAmount) || adjustedAmount < 0 || adjustedAmount > 100000) {
+    throw new Error('Adjusted amount must be between ₹0 and ₹100,000.');
+  }
 
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
@@ -498,6 +508,16 @@ function saveOrder_(body) {
         total:item.price * qty
       };
     });
+
+    if (adjustedAmount > 0) {
+      validated.push({
+        id:'ADJUSTMENT',
+        name:'Adjusted amount',
+        price:adjustedAmount,
+        qty:0,
+        total:adjustedAmount
+      });
+    }
 
     const now = new Date();
     const orderSheet = ss.getSheetByName(APP.SHEETS.ORDERS);
@@ -540,6 +560,94 @@ function saveOrder_(body) {
       status:'Closed',
       totalAmount:validated.reduce((sum,i) => sum + i.total, 0),
       totalQty:validated.reduce((sum,i) => sum + i.qty, 0)
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function updateOrder_(body) {
+  const orderId = String(body.orderId || '').trim();
+  const items = Array.isArray(body.items) ? body.items : [];
+  const paymentMethod = String(body.paymentMethod || '').trim();
+  const orderType = String(body.orderType || '').trim();
+  const orderFor = String(body.orderFor || '').trim().slice(0,60);
+  const adjustedAmount = Number(body.adjustedAmount || 0);
+
+  if (!orderId) throw new Error('Order ID required.');
+  if (!items.length) throw new Error('Order is empty.');
+  if (!['Online','Offline'].includes(paymentMethod)) throw new Error('Choose Online or Offline payment.');
+  if (!['Dine-in','Takeaway'].includes(orderType)) throw new Error('Choose Dine-in or Takeaway.');
+  if (!isFinite(adjustedAmount) || adjustedAmount < 0 || adjustedAmount > 100000) {
+    throw new Error('Adjusted amount must be between ₹0 and ₹100,000.');
+  }
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    const sheet = ss_().getSheetByName(APP.SHEETS.ORDERS);
+    if (!sheet || sheet.getLastRow() < 2) throw new Error('Order not found.');
+    ensureOrderSchema_(sheet);
+
+    const width = APP.HEADERS.Orders.length;
+    const existingRows = sheet.getRange(2,1,sheet.getLastRow()-1,width).getValues();
+    const rowNumbers = [];
+    let original = null;
+    existingRows.forEach((row,index) => {
+      if (String(row[0] || '') !== orderId) return;
+      if (!original) original = row;
+      rowNumbers.push(index + 2);
+    });
+    if (!original) throw new Error('Order not found.');
+    if (String(original[7] || '').toLowerCase() === 'cancelled') throw new Error('Cancelled orders cannot be edited.');
+
+    const itemMap = {};
+    getItemsPayload_().items.forEach(item => itemMap[item.id] = item);
+    const validated = items.map(entry => {
+      const item = itemMap[String(entry.id || '')];
+      const qty = parseInt(entry.qty,10);
+      if (!item) throw new Error('An item is invalid or inactive. Refresh and try again.');
+      if (!Number.isInteger(qty) || qty <= 0 || qty > 999) throw new Error('Invalid quantity.');
+      const historical = existingRows.find(row => String(row[0]) === orderId && String(row[2]) === item.id);
+      const price = historical ? Number(historical[5]) : item.price;
+      return {id:item.id,name:item.name,price:price,qty:qty,total:price * qty};
+    });
+    if (adjustedAmount > 0) {
+      validated.push({id:'ADJUSTMENT',name:'Adjusted amount',price:adjustedAmount,qty:0,total:adjustedAmount});
+    }
+
+    const replacementRows = validated.map(item => [
+      orderId,
+      original[1],
+      item.id,
+      item.name,
+      item.qty,
+      item.price,
+      item.total,
+      'Closed',
+      paymentMethod,
+      original[9],
+      original[10],
+      original[11],
+      orderType,
+      orderFor
+    ]);
+
+    // Replace in one write: the original order remains intact until setValues succeeds.
+    const updatedRows = existingRows.filter(row => String(row[0] || '') !== orderId).concat(replacementRows);
+    while (updatedRows.length < existingRows.length) updatedRows.push(Array(width).fill(''));
+    if (sheet.getMaxRows() < updatedRows.length + 1) {
+      sheet.insertRowsAfter(sheet.getMaxRows(),updatedRows.length + 1 - sheet.getMaxRows());
+    }
+    sheet.getRange(2,1,updatedRows.length,width).setValues(updatedRows);
+    const businessDate = formatDate_(original[9]);
+    if (businessDate) invalidateBusinessDateCaches_(businessDate,true);
+
+    return {
+      orderId:orderId,
+      updated:true,
+      totalAmount:validated.reduce((sum,item) => sum + item.total,0),
+      totalQty:validated.reduce((sum,item) => sum + item.qty,0)
     };
   } finally {
     lock.releaseLock();
@@ -645,6 +753,13 @@ function updateExpense_(body) {
 }
 
 function saveExpenseRow_(expenseId, body) {
+  const lock=LockService.getScriptLock();
+  lock.waitLock(20000);
+  try { return saveExpenseRowLocked_(expenseId,body); }
+  finally { lock.releaseLock(); }
+}
+
+function saveExpenseRowLocked_(expenseId, body) {
   const amount = Number(body.amount);
   if (!(amount > 0)) throw new Error('Expense amount must be greater than zero.');
 
@@ -746,6 +861,7 @@ function getExpenses_(value, period) {
     .map(r => ({
       expenseId:String(r[0]),
       dateTime:formatDateTime_(r[1]),
+      sortTimestamp:toDate_(r[1]) ? toDate_(r[1]).getTime() : 0,
       businessDate:formatDate_(r[2]),
       expenseType:String(r[3] || ''),
       frequency:String(r[4] || ''),
@@ -761,7 +877,7 @@ function getExpenses_(value, period) {
       fundOwner:String(r[14] || ''),
       fundRemaining:r[15] === '' ? null : Number(r[15]) || 0
     }))
-    .sort((a,b) => b.dateTime.localeCompare(a.dateTime));
+    .sort((a,b) => b.sortTimestamp - a.sortTimestamp);
 
   const settlementsByExpense = {};
   getSettlementRows_().forEach(r => {
@@ -848,6 +964,10 @@ function getToday_() {
 }
 
 function getAllTimeSales_() {
+  if (!buildingReadModels_ && prepareReadModels_()) {
+    const report=readDailyReports_('all','');
+    return {sales:report.sales,orders:report.orders};
+  }
   const cache = CacheService.getScriptCache();
   const cached = cache.get('all-time-sales-v1');
   if (cached) return JSON.parse(cached);
@@ -864,6 +984,7 @@ function getAllTimeSales_() {
 }
 
 function getAllTimeExpense_() {
+  if (!buildingReadModels_ && prepareReadModels_()) return readDailyReports_('all','').totalExpense;
   const cache = CacheService.getScriptCache();
   const cached = cache.get('all-time-expense-v1');
   if (cached) return Number(cached) || 0;
@@ -876,6 +997,9 @@ function getReport_(type, value) {
   type = String(type || 'day');
   value = String(value || '');
   validateReportInput_(type, value);
+  if (!buildingReadModels_ && prepareReadModels_()) {
+    return readDailyReports_(type,value);
+  }
   const cache = CacheService.getScriptCache();
   const cacheKey = reportCacheKey_(type,value);
   const cached = cache.get(cacheKey);
@@ -911,9 +1035,11 @@ function getReport_(type, value) {
 
     orderIds[orderId] = true;
 
-    if (!itemMap[itemId]) itemMap[itemId] = {id:itemId, name:itemName, qty:0, sales:0};
-    itemMap[itemId].qty += qty;
-    itemMap[itemId].sales += total;
+    if (itemId !== 'ADJUSTMENT') {
+      if (!itemMap[itemId]) itemMap[itemId] = {id:itemId, name:itemName, qty:0, sales:0};
+      itemMap[itemId].qty += qty;
+      itemMap[itemId].sales += total;
+    }
 
     if (!sessionMap[sessionId]) {
       sessionMap[sessionId] = {
@@ -1023,6 +1149,9 @@ function invalidateBusinessDateCaches_(businessDate, salesChanged) {
   ];
   if (salesChanged) keys.push('all-time-sales-v1');
   CacheService.getScriptCache().removeAll(keys);
+  requestReadSnapshot_ = {};
+  // Durable queue: do not scan historical orders or rebuild reports during checkout.
+  PropertiesService.getScriptProperties().setProperty('dirty-day-' + businessDate,String(Date.now())+'-'+Utilities.getUuid());
 }
 
 function getHistory_(offset, limit, filters) {
@@ -1032,6 +1161,12 @@ function getHistory_(offset, limit, filters) {
   const cacheKey = readCacheKey_('history', {offset:offset, limit:limit, filters:filters});
   const cached = readCachedJson_(cacheKey);
   if (cached) return cached;
+
+  if (!buildingReadModels_ && prepareReadModels_()) {
+    const indexed = readIndexedHistory_(offset,limit,filters);
+    writeCachedJson_(cacheKey,indexed,20);
+    return indexed;
+  }
 
   const rows = getOrderRows_();
   const map = {};
@@ -1158,12 +1293,12 @@ function writeCachedJson_(key, value, seconds) {
 }
 
 function saveReportPdf_(body) {
+  const type = String(body.type || 'day');
+  const value = String(body.value || getActiveBusinessDate_());
+  const report = getReport_(type,value);
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
-    const type = String(body.type || 'day');
-    const value = String(body.value || getActiveBusinessDate_());
-    const report = getReport_(type, value);
     const settings = getSettings_();
     const html = buildReportHtml_(report, settings);
 
@@ -1363,20 +1498,25 @@ function findIdRow_(sheet, id) {
   return 0;
 }
 
+let requestReadSnapshot_ = {};
+
 function getOrderRows_() {
+  if (requestReadSnapshot_.orders) return requestReadSnapshot_.orders;
   const sheet = ss_().getSheetByName(APP.SHEETS.ORDERS);
   if (!sheet || sheet.getLastRow() < 2) return [];
   ensureOrderSchema_(sheet);
-  return sheet.getRange(2,1,sheet.getLastRow()-1,APP.HEADERS.Orders.length).getValues();
+  return requestReadSnapshot_.orders = sheet.getRange(2,1,sheet.getLastRow()-1,APP.HEADERS.Orders.length).getValues();
 }
 
 function getExpenseRows_() {
+  if (requestReadSnapshot_.expenses) return requestReadSnapshot_.expenses;
   const sheet = ss_().getSheetByName(APP.SHEETS.EXPENSES);
   if (!sheet || sheet.getLastRow() < 2) return [];
-  return sheet.getRange(2,1,sheet.getLastRow()-1,APP.HEADERS.Expenses.length).getValues();
+  return requestReadSnapshot_.expenses = sheet.getRange(2,1,sheet.getLastRow()-1,APP.HEADERS.Expenses.length).getValues();
 }
 
 function getSessionMeta_() {
+  if (requestReadSnapshot_.sessions) return requestReadSnapshot_.sessions;
   const sheet = ss_().getSheetByName(APP.SHEETS.SESSIONS);
   const out = {};
   if (!sheet || sheet.getLastRow() < 2) return out;
@@ -1394,7 +1534,7 @@ function getSessionMeta_() {
       status:String(r[5] || '')
     };
   });
-  return out;
+  return requestReadSnapshot_.sessions = out;
 }
 
 function calcExpenseTotals_(items) {
@@ -1427,6 +1567,11 @@ function rebuildSummariesForBusinessDate_(businessDate) {
 
   const year = businessDate.slice(0,4);
   upsertSummary_(APP.SHEETS.YEARLY, year, getReport_('year', year));
+}
+
+// Run once after deployment to repair historical summaries without changing source records.
+function repairAllSummaries() {
+  return reconcileReadModels();
 }
 
 function upsertSummary_(sheetName, key, report) {

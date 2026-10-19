@@ -12,12 +12,15 @@ const state = {
   activeOrderId:Store.get('sb.activeOrderId',''),
   orderType:'Dine-in',
   orderFor:'',
+  adjustedAmount:0,
+  editingOrderId:'',
   activeCategory:'All',
   itemView:Store.get('sb.itemView','grid') === 'list' ? 'list' : 'grid',
   search:'',
   historyOffset:0,
   nextHistoryOffset:null,
   historyLoading:false,
+  historyOrders:[],
   loadingViews:new Set(),
   loadedAt:{},
   historyFilters:{q:'', from:'', to:'', payment:'', orderType:'', status:'', minAmount:'', maxAmount:'', sort:'newest'},
@@ -59,12 +62,13 @@ async function init(){
   setDefaultReportInput();
   setOffline(!navigator.onLine);
   initializeLazyLoading();
+  renderOrderSyncStatus();
 
   window.addEventListener('online',()=>{
     setOffline(false);
     processOrderOutbox();
   });
-  window.addEventListener('offline',()=>setOffline(true));
+  window.addEventListener('offline',()=>{setOffline(true);renderOrderSyncStatus();});
 
   await bootstrap();
   processOrderOutbox();
@@ -122,6 +126,8 @@ function observeCartSheetSize(){
 }
 
 function bind(){
+  $('#retryOrderSync').onclick=processOrderOutbox;
+  $('#refreshOperationalStatus').onclick=loadOperationalStatus;
   $$('.nav-item').forEach(b => b.onclick = () => showView(b.dataset.view));
 
   $('#searchToggle').onclick = toggleSearch;
@@ -174,12 +180,18 @@ function bind(){
   };
 
   $('#cartDetailsToggle').onclick = toggleCartDetails;
+  $('#adjustedAmount').oninput = e => {
+    state.adjustedAmount = Math.max(0,Number(e.target.value) || 0);
+    persistCart();
+    renderCart();
+  };
   $('#clearCart').onclick = async () => {
     if (!Object.keys(state.cart).length) return;
     if (!await showConfirm('Clear the current order?', {
       title:'Clear current order', confirmText:'Clear order', danger:true
     })) return;
     state.cart = {};
+    state.adjustedAmount = 0;
     persistCart();
     renderItems();
     renderCart();
@@ -299,9 +311,11 @@ function bind(){
   $('#loadMoreExpenses').onclick = loadMoreExpenseCards;
 
   $('#history').onclick = e => {
+    const edit = e.target.closest('[data-edit-order]');
     const cancel = e.target.closest('[data-cancel-order]');
     const del = e.target.closest('[data-delete-order]');
-    if (cancel) cancelOrder(cancel.dataset.cancelOrder);
+    if (edit) editSavedOrder(edit.dataset.editOrder);
+    else if (cancel) cancelOrder(cancel.dataset.cancelOrder);
     if (del) deleteOrder(del.dataset.deleteOrder);
   };
 
@@ -380,16 +394,18 @@ async function saveNavigationSettings(){
 }
 
 function showView(view){
-  if (!isNavigationTabEnabled(view)) return showView('order');
+  const section = $('#view-'+view);
+  if (!section) return;
   $$('.view').forEach(v => v.classList.remove('active'));
-  $('#view-'+view).classList.add('active');
+  section.classList.add('active');
   document.body.classList.toggle('menu-view-active',view === 'menu');
   $$('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.view === view));
   if (view !== 'order') setSearchOpen(false);
   ensureCartSheetVisible();
+  if(view==='settings')loadOperationalStatus();
 
   if (view === 'today' && !dataIsFresh('today')) loadToday();
-  if (view === 'history') loadHistory(true);
+  if (view === 'history' && !dataIsFresh('history')) loadHistory(true);
   const expenseKey = `expenses:${state.expensePeriod}:${state.expensePeriodValue || 'current'}`;
   const reportKey = `report:${state.reportType}:${$('#reportValue').value || 'current'}`;
   if (view === 'expenses' && !dataIsFresh(expenseKey)) loadExpenses();
@@ -460,12 +476,15 @@ function renderItems(){
     const description = state.showItemDescriptions && item.description
       ? `<div class="item-desc">${esc(item.description)}</div>`
       : '';
+    const weight = Number(item.weightG) > 0
+      ? `<span class="item-weight" data-item-weight="${esc(item.id)}">${formatWeight(Number(item.weightG) * Math.max(1,qty))}</span>`
+      : '';
 
     return `<article class="item-card ${qty ? 'selected' : ''}" data-item-card="${esc(item.id)}">
       ${image}
       <div class="item-card-content">
         <div class="item-name">${esc(item.name)}</div>
-        <div class="item-price">₹${money(item.price)}</div>
+        <div class="item-price-row"><div class="item-price">₹${money(item.price)}</div>${weight}</div>
         ${description}
       </div>
       <div class="qty-row">
@@ -542,7 +561,7 @@ function renderMenuManager(){
     <div class="menu-manager-category-title"><strong>${esc(group.category)}</strong><span>${group.items.length} item${group.items.length === 1 ? '' : 's'}</span></div>
     <div class="menu-manager-category-items">${group.items.map(item => `
       <div class="menu-manager-row ${item.active === 'No' ? 'inactive' : ''}">
-        <div><strong>${esc(item.name)}</strong><small>${esc(item.id)} · Sort ${money(item.sortOrder)}${item.active === 'No' ? ' · Inactive' : ''}</small></div>
+        <div><strong>${esc(item.name)}</strong><small>${esc(item.id)} · Sort ${money(item.sortOrder)}${item.weightG ? ` · ${formatWeight(item.weightG)}` : ''}${item.active === 'No' ? ' · Inactive' : ''}</small></div>
         <strong>₹${money(item.price)}</strong>
         <button class="small-btn" data-edit-menu-item="${esc(item.id)}" type="button">Edit</button>
         <button class="small-btn danger-text" data-delete-menu-item="${esc(item.id)}" type="button">Delete</button>
@@ -557,6 +576,7 @@ function openMenuItemForm(item=null){
   $('#menuItemName').value = value.name || '';
   $('#menuItemCategory').value = value.category || '';
   $('#menuItemPrice').value = value.price ?? '';
+  $('#menuItemWeight').value = value.weightG || '';
   $('#menuItemActive').value = value.active || 'Yes';
   $('#menuItemSortOrder').value = value.sortOrder ?? (state.adminItems.length + 1);
   $('#menuItemImageUrl').value = value.imageUrl || '';
@@ -587,7 +607,7 @@ async function saveMenuItem(){
   const body = {
     originalItemId:$('#menuOriginalItemId').value.trim(), itemId:$('#menuItemId').value.trim(),
     name:$('#menuItemName').value.trim(), category:$('#menuItemCategory').value.trim(),
-    price:Number($('#menuItemPrice').value), active:$('#menuItemActive').value,
+    price:Number($('#menuItemPrice').value), weightG:Number($('#menuItemWeight').value) || 0, active:$('#menuItemActive').value,
     sortOrder:Number($('#menuItemSortOrder').value), imageUrl:$('#menuItemImageUrl').value.trim(),
     description:$('#menuItemDescription').value.trim()
   };
@@ -604,7 +624,9 @@ async function saveMenuItem(){
     renderCategories();
     renderItems();
     renderMenuCategoryOptions();
-    closeMenuItemForm(); renderMenuManager(); toast(body.originalItemId ? 'Item updated.' : 'Item added.');
+    closeMenuItemForm();
+    renderMenuManager();
+    toast(body.originalItemId ? 'Item updated.' : 'Item added.');
   }catch(e){ toast(e.message || 'Could not save item.',true); }
   finally{ button.disabled = false; button.textContent = body.originalItemId ? 'Update item' : 'Save item'; }
 }
@@ -639,6 +661,18 @@ function updateItemCard(id){
   card.classList.toggle('selected', qty > 0);
   const value = card.querySelector('.qty-num');
   if (value) value.textContent = qty;
+  const item = state.items.find(entry => entry.id === String(id));
+  const weight = card.querySelector('[data-item-weight]');
+  if (weight && item) weight.textContent = formatWeight(Number(item.weightG) * Math.max(1,qty));
+}
+
+function formatWeight(grams){
+  const value = Math.max(0,Number(grams) || 0);
+  if (value >= 1000){
+    const kilograms = value / 1000;
+    return `${kilograms % 1 === 0 ? kilograms.toFixed(0) : kilograms.toFixed(2).replace(/0+$/,'').replace(/\.$/,'')}kg`;
+  }
+  return `${money(value)}g`;
 }
 
 function persistCart(){
@@ -649,6 +683,9 @@ function persistCart(){
     order.payment = state.payment;
     order.orderType = state.orderType;
     order.orderFor = state.orderFor;
+    order.adjustedAmount = state.adjustedAmount;
+    order.savedOrderId = state.editingOrderId;
+    order.originalPrices = state.originalPrices || {};
     order.updatedAt = new Date().toISOString();
   }
   persistOpenOrders();
@@ -662,6 +699,9 @@ function newOpenOrderRecord(seed={}){
     orderType:seed.orderType === 'Takeaway' ? 'Takeaway' : 'Dine-in',
     cart:{...(seed.cart || {})},
     payment:seed.payment === 'Offline' ? 'Offline' : 'Online',
+    adjustedAmount:Math.max(0,Number(seed.adjustedAmount) || 0),
+    savedOrderId:String(seed.savedOrderId || ''),
+    originalPrices:{...(seed.originalPrices || {})},
     createdAt:new Date().toISOString(),
     updatedAt:new Date().toISOString()
   };
@@ -694,6 +734,9 @@ function loadActiveOpenOrder(shouldRender=true){
   state.payment = order.payment === 'Offline' ? 'Offline' : 'Online';
   state.orderType = order.orderType === 'Takeaway' ? 'Takeaway' : 'Dine-in';
   state.orderFor = String(order.orderFor || '');
+  state.adjustedAmount = Math.max(0,Number(order.adjustedAmount) || 0);
+  state.editingOrderId = String(order.savedOrderId || '');
+  state.originalPrices = {...(order.originalPrices || {})};
   Store.set('sb.cart',state.cart);
   Store.set('sb.payment',state.payment);
   persistOpenOrders();
@@ -754,7 +797,7 @@ function closeActiveOpenOrder(closedId=state.activeOrderId){
 function renderOpenOrders(){
   const host = $('#openOrderTabs');
   if (!host) return;
-  host.innerHTML = state.openOrders.map((order,index) => {
+  const html = state.openOrders.map((order,index) => {
     const qty = Object.values(order.cart || {}).reduce((sum,value) => sum + (Number(value) || 0), 0);
     const label = String(order.orderFor || '').trim() || `${order.orderType || 'Dine-in'} ${index + 1}`;
     const active = order.id === state.activeOrderId;
@@ -763,6 +806,10 @@ function renderOpenOrders(){
       <button type="button" class="open-order-remove" data-remove-open-order="${esc(order.id)}" aria-label="Discard ${esc(label)}">×</button>
     </div>`;
   }).join('');
+  if (host._renderedHtml !== html){
+    host.innerHTML = html;
+    host._renderedHtml = html;
+  }
 }
 
 function renderOrderContext(){
@@ -779,7 +826,7 @@ function renderOrderContext(){
     if (!showReference){
       if (state.orderFor){
         state.orderFor = '';
-        syncActiveOpenOrder();
+        persistCart();
       }
       input.value = '';
       input.disabled = true;
@@ -793,13 +840,21 @@ function renderOrderContext(){
 function cartLines(){
   return state.items
     .filter(i => state.cart[i.id])
-    .map(i => ({...i,qty:Number(state.cart[i.id]),total:Number(state.cart[i.id]) * Number(i.price)}));
+    .map(i => {
+      const price = state.editingOrderId && Object.prototype.hasOwnProperty.call(state.originalPrices || {},i.id)
+        ? Number(state.originalPrices[i.id]) : Number(i.price);
+      return {...i,price,qty:Number(state.cart[i.id]),total:Number(state.cart[i.id]) * price};
+    });
 }
 
 function renderCart(){
   const lines = cartLines();
   const qty = lines.reduce((sum,i) => sum + i.qty,0);
-  const total = lines.reduce((sum,i) => sum + i.total,0);
+  const adjustedAmount = Math.max(0,Number(state.adjustedAmount) || 0);
+  const total = lines.reduce((sum,i) => sum + i.total,0) + adjustedAmount;
+
+  const adjustedInput = $('#adjustedAmount');
+  if (adjustedInput && document.activeElement !== adjustedInput) adjustedInput.value = adjustedAmount || 0;
 
   $('#sheetQty').textContent = qty;
   $('#sheetTotal').textContent = '₹' + money(total);
@@ -809,8 +864,10 @@ function renderCart(){
 
   const saveOrderTotal = $('#saveOrderTotal');
   if (saveOrderTotal) saveOrderTotal.innerHTML = `₹${money(total)}&nbsp;&nbsp; →`;
+  const saveOrderLabel = $('#saveOrder .save-order-label');
+  if (saveOrderLabel) saveOrderLabel.textContent = state.editingOrderId ? 'Update order' : 'Save & Close';
 
-  $('#cartItems').innerHTML = lines.length
+  const cartHtml = lines.length
     ? lines.map(i => {
         const thumb = state.showImages && i.imageUrl
           ? `<img class="cart-thumb" loading="lazy" decoding="async" src="${esc(i.imageUrl)}" alt="">`
@@ -832,6 +889,12 @@ function renderCart(){
         </div>`;
       }).join('')
     : '<div class="empty compact">No items selected.</div>';
+
+  const cartItems = $('#cartItems');
+  if (cartItems._renderedHtml !== cartHtml){
+    cartItems.innerHTML = cartHtml;
+    cartItems._renderedHtml = cartHtml;
+  }
 
   $('#saveOrder').disabled = !lines.length || state.saving;
   renderPayment();
@@ -866,7 +929,7 @@ function removeCartItem(id){
 function ensureCartSheetVisible(){
   const sheet = $('#cartSheet');
   const hasItems = cartLines().length > 0;
-  const hasSession = Boolean(state.session);
+  const hasSession = Boolean(state.session) || Boolean(state.editingOrderId);
   const orderViewActive = $('#view-order').classList.contains('active');
   const modalOpen = $$('.sheet:not(.cart-sheet):not(.hidden):not(.closing)').length > 0;
 
@@ -890,7 +953,7 @@ function renderPayment(){
 }
 
 async function saveOrder(){
-  if (!state.session){
+  if (!state.session && !state.editingOrderId){
     closeSheets();
     renderSessionSheet();
     return;
@@ -908,8 +971,32 @@ async function saveOrder(){
     items,
     paymentMethod:state.payment,
     orderType:state.orderType,
-    orderFor:orderFor
+    orderFor:orderFor,
+    adjustedAmount:Math.max(0,Number(state.adjustedAmount) || 0)
   };
+
+  if (state.editingOrderId){
+    const editingOrderId = state.editingOrderId;
+    try{
+      await Api.updateOrder({...pending,orderId:editingOrderId});
+      closeActiveOpenOrder(openOrderId);
+      state.saving = false;
+      state.loadedAt = {};
+      renderSessionWarning();
+      renderItems();
+      renderOpenOrders();
+      closeSheets();
+      renderCart();
+      showView('history');
+      await loadHistory(true);
+      toast(`Order ${editingOrderId} updated.`);
+    }catch(e){
+      state.saving = false;
+      renderCart();
+      toast(e.message || 'Could not update order.',true);
+    }
+    return;
+  }
 
   // Persist before closing the cart. A reload, connection loss, or Apps Script
   // timeout cannot lose the order; the same request ID also makes retries safe.
@@ -935,8 +1022,9 @@ function scheduleOrderSync(delay=15000){
 }
 
 async function processOrderOutbox(){
-  if (orderSyncRunning || !navigator.onLine) return;
+  if (orderSyncRunning || !navigator.onLine){renderOrderSyncStatus();return;}
   orderSyncRunning = true;
+  renderOrderSyncStatus();
 
   try{
     let outbox = Store.get('sb.orderOutbox',[]);
@@ -948,6 +1036,7 @@ async function processOrderOutbox(){
           item && item.payload && item.payload.clientRequestId !== entry.payload.clientRequestId
         );
         Store.set('sb.orderOutbox',outbox);
+        renderOrderSyncStatus();
         state.loadedAt = {};
         toast(result.duplicate ? `Order ${result.orderId} already synced` : `Order ${result.orderId} synced`);
       }catch(e){
@@ -966,6 +1055,40 @@ async function processOrderOutbox(){
     }
   }finally{
     orderSyncRunning = false;
+    renderOrderSyncStatus();
+  }
+}
+
+function renderOrderSyncStatus(){
+  const host=$('#orderSyncStatus');
+  if(!host)return;
+  const outbox=Store.get('sb.orderOutbox',[]);
+  host.classList.toggle('hidden',!outbox.length);
+  const failed=outbox.some(entry=>entry.lastError);
+  const status=!navigator.onLine?'Waiting for internet':orderSyncRunning?'Syncing':failed?'Sync failed — retry pending':'Waiting to sync';
+  host.querySelector('span').textContent=`${status}: ${outbox.length} order${outbox.length===1?'':'s'} saved on this device`;
+  $('#retryOrderSync').disabled=orderSyncRunning||!navigator.onLine;
+}
+
+async function loadOperationalStatus(){
+  const button=$('#refreshOperationalStatus');
+  if(button.disabled)return;
+  button.disabled=true;
+  button.textContent='Refreshing…';
+  try{
+    const status=await Api.request('operationalStatus',{retries:0});
+    const time=value=>value?new Date(value).toLocaleString(undefined,{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}):'Not recorded';
+    const metrics=[['Summaries updated',time(status.refreshedAt)],['Pending updates',Number(status.pendingDays)||0],['Verified backup',time(status.backupAt)],['Recovery checked',time(status.recoveryTestAt)]];
+    const warnings=[status.refreshError?`Refresh error: ${status.refreshError}`:'',status.backupError?`Backup error: ${status.backupError}`:''].filter(Boolean);
+    $('#operationalStatus').innerHTML=`<div class="operational-grid">${metrics.map(([label,value])=>`<div class="operational-metric"><span>${esc(label)}</span><strong>${esc(String(value))}</strong></div>`).join('')}</div>${warnings.map(message=>`<div class="operational-warning">${esc(message)}</div>`).join('')}`;
+  }catch(error){$('#operationalStatus').textContent='Status unavailable. Check the connection and deploy the latest backend.';}
+  finally{
+    const samples=Store.get('sb.requestTimings',[]).filter(sample=>sample.ok && sample.action!=='operationalStatus');
+    $('#requestTimingStatus').textContent=samples.length
+      ? `Recent requests: ${(samples.reduce((sum,sample)=>sum+sample.ms,0)/samples.length/1000).toFixed(1)}s average (${samples.length} successful requests). Timings stay on this device.`
+      : 'Request timings appear after using the app.';
+    button.disabled=false;
+    button.textContent='Refresh';
   }
 }
 
@@ -1012,7 +1135,7 @@ function renderSessionWarning(){
   const warning = $('#sessionWarning');
   if (!warning) return;
 
-  const hasSession = Boolean(state.session);
+  const hasSession = Boolean(state.session) || Boolean(state.editingOrderId);
   $('#orderWorkspace')?.classList.toggle('hidden', !hasSession);
   $('#sessionRequired')?.classList.toggle('hidden', hasSession);
 
@@ -1188,21 +1311,26 @@ async function loadHistory(reset=false){
 
   try{
     const data = await Api.history(state.historyOffset,state.historyFilters);
+    markDataLoaded('history');
+    if (reset) state.historyOrders = data.orders || [];
+    else state.historyOrders = state.historyOrders.concat(data.orders || []);
     const html = (data.orders || []).map(order => {
       const cancelled = String(order.status).toLowerCase() === 'cancelled';
       const orderItems = order.items || [];
-      const productTitle = orderItems.length
-        ? `${orderItems[0].name}${orderItems.length > 1 ? ` +${orderItems.length - 1} more` : ''}`
+      const productItems = orderItems.filter(item => Number(item.qty) > 0);
+      const productTitle = productItems.length
+        ? `${productItems[0].name}${productItems.length > 1 ? ` +${productItems.length - 1} more` : ''}`
         : 'Order details';
       const itemDetails = orderItems.map(item => `
         <div class="history-item">
-          <span><b>${money(item.qty)}×</b> ${esc(item.name)}</span>
+          <span>${Number(item.qty) > 0 ? `<b>${money(item.qty)}×</b> ` : ''}${esc(item.name)}</span>
           <strong>₹${money(item.total)}</strong>
         </div>`).join('');
       const cancelButton = cancelled
         ? '<span class="status-cancelled">Cancelled</span>'
         : `<button class="small-btn danger-text" data-cancel-order="${esc(order.orderId)}">Cancel</button>`;
       const deleteButton = `<button class="small-btn delete-order-btn" data-delete-order="${esc(order.orderId)}">Delete</button>`;
+      const editButton = cancelled ? '' : `<button class="small-btn" data-edit-order="${esc(order.orderId)}">Edit</button>`;
       const orderFor = String(order.orderFor || '').trim();
       const orderType = String(order.orderType || 'Unspecified');
 
@@ -1221,7 +1349,7 @@ async function loadHistory(reset=false){
         <div class="history-items">${itemDetails || '<div class="empty compact">No item details.</div>'}</div>
         <div class="history-footer">
           <div><strong>${money(order.totalQty)} dishes</strong><small>${esc(order.paymentMethod)} payment</small></div>
-          <div class="history-actions">${cancelButton}${deleteButton}</div>
+          <div class="history-actions">${editButton}${cancelButton}${deleteButton}</div>
         </div>
       </div>`;
     }).join('');
@@ -1247,6 +1375,40 @@ async function loadHistory(reset=false){
     $('#loadMore').disabled = false;
     $('#loadMore').textContent = 'Load more';
   }
+}
+
+async function editSavedOrder(orderId){
+  const order = state.historyOrders.find(item => item.orderId === orderId);
+  if (!order) return toast('Reload history and try again.',true);
+  const cart = {};
+  const originalPrices = {};
+  let adjustedAmount = 0;
+  for (const item of order.items || []){
+    if (String(item.itemId) === 'ADJUSTMENT') adjustedAmount += Number(item.total) || 0;
+    else if (Number(item.qty) > 0){
+      cart[item.itemId] = Number(item.qty);
+      originalPrices[item.itemId] = Number(item.total) / Number(item.qty);
+    }
+  }
+  const missingItem = Object.keys(cart).find(id => !state.items.some(item => item.id === id));
+  if (missingItem) return toast('This order contains a menu item that is no longer active.',true);
+
+  persistCart();
+  const editable = newOpenOrderRecord({
+    cart,
+    payment:order.paymentMethod,
+    orderType:order.orderType,
+    orderFor:order.orderFor,
+    adjustedAmount,
+    originalPrices,
+    savedOrderId:order.orderId
+  });
+  state.openOrders.push(editable);
+  state.activeOrderId = editable.id;
+  loadActiveOpenOrder();
+  renderSessionWarning();
+  showView('order');
+  toast(`Editing order ${order.orderId}`);
 }
 
 function readHistoryFilters(){

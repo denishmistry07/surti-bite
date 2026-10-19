@@ -14,7 +14,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./css/style.css?v=20261016-29">
+  <link rel="stylesheet" href="./css/style.css?v=20261019-39">
 </head>
 <body>
   <svg class="icon-sprite" aria-hidden="true">
@@ -227,10 +227,10 @@
 
   <nav class="bottom-nav" aria-label="Main navigation">
     <button class="nav-item active" data-view="order"><svg class="icon"><use href="#i-cart"/></svg><span>Order</span></button>
-    <button class="nav-item" data-view="today"><svg class="icon"><use href="#i-chart"/></svg><span>Today</span></button>
-    <button class="nav-item" data-view="reports"><svg class="icon"><use href="#i-file"/></svg><span>Reports</span></button>
-    <button class="nav-item" data-view="history"><svg class="icon"><use href="#i-history"/></svg><span>History</span></button>
-    <button class="nav-item" data-view="expenses"><svg class="icon"><use href="#i-wallet"/></svg><span>Expenses</span></button>
+    <button class="nav-item hidden" data-view="today"><svg class="icon"><use href="#i-chart"/></svg><span>Today</span></button>
+    <button class="nav-item hidden" data-view="reports"><svg class="icon"><use href="#i-file"/></svg><span>Reports</span></button>
+    <button class="nav-item hidden" data-view="history"><svg class="icon"><use href="#i-history"/></svg><span>History</span></button>
+    <button class="nav-item hidden" data-view="expenses"><svg class="icon"><use href="#i-wallet"/></svg><span>Expenses</span></button>
     <button class="nav-item" data-view="menu"><svg class="icon"><use href="#i-grid"/></svg><span>Menu</span></button>
     <button class="nav-item" data-view="settings"><svg class="icon"><use href="#i-settings"/></svg><span>Settings</span></button>
   </nav>
@@ -248,6 +248,10 @@
       </div>
       <div id="cartDetails" class="cart-items-collapsible">
         <div id="cartItems"></div>
+        <label class="adjusted-amount-field" for="adjustedAmount">
+          <span><strong>Adjusted amount</strong><small>Add an extra amount to this order</small></span>
+          <span class="adjusted-amount-input"><b>₹</b><input id="adjustedAmount" type="number" min="0" step="1" inputmode="decimal" value="0" aria-label="Adjusted amount"></span>
+        </label>
         <div class="totals">
           <div><span>Total Dishes</span><strong id="sheetQty">0</strong></div>
           <div><span>Total Amount</span><strong id="sheetTotal">₹0</strong></div>
@@ -394,6 +398,7 @@
             <div class="category-dropdown-menu hidden" id="menuCategoryOptions" role="listbox"></div>
           </div>
           <label class="field-label" for="menuItemPrice">Price</label><input id="menuItemPrice" class="input" type="number" min="0" step="1" placeholder="₹0">
+          <label class="field-label" for="menuItemWeight">Weight per item (g)</label><input id="menuItemWeight" class="input" type="number" min="0" step="1" inputmode="numeric" placeholder="120">
           <label class="field-label" for="menuItemActive">Active</label><select id="menuItemActive" class="input"><option>Yes</option><option>No</option></select>
           <label class="field-label" for="menuItemSortOrder">Sort order</label><input id="menuItemSortOrder" class="input" type="number" min="0" step="1" placeholder="1">
           <label class="field-label" for="menuItemImageUrl">Image URL</label><input id="menuItemImageUrl" class="input" type="url" placeholder="https://…">
@@ -405,6 +410,11 @@
 
   <section id="view-settings" class="view">
     <div class="page-head"><h2>Settings</h2></div>
+    <div class="card operational-card">
+      <div class="card-title">Sync &amp; backups <button id="refreshOperationalStatus" class="link" type="button">Refresh</button></div>
+      <div id="operationalStatus" role="status">Open Settings to check summary and backup status.</div>
+      <p id="requestTimingStatus">Request timings appear after using the app.</p>
+    </div>
     <div class="card settings-card">
       <div class="settings-intro">
         <span class="settings-icon"><svg class="icon"><use href="#i-settings"/></svg></span>
@@ -453,10 +463,11 @@
   </div>
 
   <div id="toast" class="toast"></div>
+  <div id="orderSyncStatus" class="order-sync-status hidden" role="status" aria-live="polite"><span></span><button id="retryOrderSync" type="button">Retry</button></div>
 
   <script src="./js/config.js?v=20261016-2"></script>
   <script src="./js/storage.js"></script>
-  <script src="./js/api.js?v=20261017-8"></script>
-  <script src="./js/app.js?v=20261017-34"></script>
+  <script src="./js/api.js?v=20261019-11"></script>
+  <script src="./js/app.js?v=20261019-43"></script>
 </body>
 </html>

@@ -1,0 +1,36 @@
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+const data=new Map();
+const Store={get:(key,fallback)=>data.has(key)?data.get(key):fallback,set:(key,value)=>data.set(key,value)};
+const text={textContent:''},retry={disabled:false};
+let hidden=true;
+const banner={classList:{toggle:(name,value)=>hidden=value},querySelector:()=>text};
+const context={Store,navigator:{onLine:true},document:{addEventListener(){},querySelector:selector=>selector==='#orderSyncStatus'?banner:retry},window:{addEventListener(){}}};
+vm.createContext(context);vm.runInContext(fs.readFileSync('frontend/js/app.js','utf8'),context);
+context.renderOrderSyncStatus();assert(hidden);
+data.set('sb.orderOutbox',[{payload:{clientRequestId:'TEST'}}]);
+context.renderOrderSyncStatus();assert(!hidden);assert.match(text.textContent,/Waiting to sync/);assert(!retry.disabled);
+context.navigator.onLine=false;context.renderOrderSyncStatus();assert.match(text.textContent,/Waiting for internet/);assert(retry.disabled);
+context.navigator.onLine=true;data.get('sb.orderOutbox')[0].lastError='failed';
+context.renderOrderSyncStatus();assert.match(text.textContent,/Sync failed/);
+vm.runInContext('orderSyncRunning=true',context);context.renderOrderSyncStatus();assert.match(text.textContent,/Syncing/);assert(retry.disabled);
+data.set('sb.orderOutbox',[]);context.renderOrderSyncStatus();assert(hidden);
+console.log('PASS: empty/pending/offline/failed/syncing banner states and retry controls');
+
+const apiContext={window:{},Store,performance,APP_CONFIG:{RETRIES:1,TIMEOUT_MS:30000}};
+vm.createContext(apiContext);vm.runInContext(fs.readFileSync('frontend/js/api.js','utf8'),apiContext);
+const api=apiContext.window.Api;
+let calls=0,finish;
+api.jsonp=()=>{calls++;return new Promise(resolve=>finish=resolve);};
+(async()=>{
+  const first=api.request('history'),second=api.request('history');
+  assert.equal(first,second);finish({orders:[]});await first;
+  assert.equal(calls,1);assert.equal(data.get('sb.requestTimings').length,1);
+  api.jsonp=()=>Promise.reject(new Error('test'));
+  await api.request('today').catch(()=>{});
+  assert.equal(data.get('sb.requestTimings')[1].ok,false);
+  assert.equal(api.pendingReads.size,0);
+  api.jsonp=()=>Promise.resolve({});
+  for(let i=0;i<45;i++)await api.request('today');
+  assert.equal(data.get('sb.requestTimings').length,40);
+  console.log('PASS: shared requests measured once, failed requests recorded, local timing history bounded');
+})().catch(error=>{console.error(error);process.exitCode=1;});

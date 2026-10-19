@@ -1,4 +1,5 @@
 window.Api = {
+  pendingReads: new Map(),
   buildUrl(action, params = {}, payload = null, callback = '') {
     const base = String(APP_CONFIG.APPS_SCRIPT_URL || '').trim();
 
@@ -108,12 +109,28 @@ window.Api = {
       timeout = APP_CONFIG.TIMEOUT_MS
     } = options;
 
-    return this.jsonp(action, {
+    const readOnly = ['bootstrap','manageItems','today','allTimeSales','history','expenses','report'].includes(action);
+    const requestKey = readOnly ? JSON.stringify([action,params,timeout,retries]) : null;
+    if (readOnly && this.pendingReads.has(requestKey)) return this.pendingReads.get(requestKey);
+
+    const started = performance.now();
+    const recordTiming = ok => {
+      try{
+        const samples=Store.get('sb.requestTimings',[]);
+        samples.push({action,ms:Math.round(performance.now()-started),ok,at:Date.now()});
+        Store.set('sb.requestTimings',samples.slice(-40));
+      }catch(_){}
+    };
+    const request = this.jsonp(action, {
       params,
       payload: body,
       retries,
       timeout
-    });
+    }).then(result=>{recordTiming(true);return result;},error=>{recordTiming(false);throw error;});
+    if (!readOnly) return request;
+    const shared = request.finally(() => this.pendingReads.delete(requestKey));
+    this.pendingReads.set(requestKey,shared);
+    return shared;
   },
 
   bootstrap(){ return this.request('bootstrap'); },
@@ -149,6 +166,10 @@ window.Api = {
 
   saveOrder(body){
     return this.request('saveOrder',{body,retries:0});
+  },
+
+  updateOrder(body){
+    return this.request('updateOrder',{body,retries:0});
   },
 
   cancelOrder(orderId){
